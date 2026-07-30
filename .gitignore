@@ -1,0 +1,7 @@
+# nastavení je pro každý počítač jiné (obsahuje místní cestu k vaultu)
+config.json
+
+# soubory, které si appka vyrábí sama za běhu
+holub.log
+holub-ikona.png
+__pycache__/

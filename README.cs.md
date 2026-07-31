@@ -58,6 +58,9 @@ konflikty a kontrola nanečisto, co by příští synchronizace udělala:
   verze poznámky vyhrává. Konflikt (stejná poznámka změněná na obou stranách)
   se **nikdy nepřepíše potichu** — obě verze zůstanou, druhá jako
   `poznamka (konflikt z USB).md`.
+- **Automatická synchronizace** — každých 15/30/60 minut, libovolný interval,
+  nebo jednou denně v čas, který si zvolíš. Hodí se, když USB zůstává
+  v počítači trvale; bez připojeného disku časovač jen tiše čeká.
 - **Windows oznámení** po dokončení („12 poznámek zkopírováno na USB · 3 s")
   i při chybě, s vysvětlením co se stalo.
 - **Spouštění se systémem Windows** — zapíná se jedním kliknutím v menu.
@@ -105,6 +108,7 @@ vše synchronizováno · dnes 14:32
 🪟 Přehled a historie
 🔄 Synchronizovat teď
 ⇄  Režim synchronizace        ▸
+⏰ Automatická synchronizace  ▸
 📁 Otevřít zálohu na USB
 📂 Zvolit složku vaultu…
 🔌 Spárovat nový USB disk…

@@ -10,6 +10,8 @@
 
 Odchylky od plánu: autostart se dělá malým souborem `Holub.pyw` ve složce Po spuštění (ne zástupcem `.lnk` — výsledek stejný, jednodušší na výrobu); navíc přibyl přepínač `--config` pro testování a zámek proti dvojímu spuštění appky.
 
+**Časovač (HOTOVO 2026-07-31, Tomášovo zadání — řeší otázku 2):** podmenu „⏰ Automatická synchronizace" — vypnutá (výchozí) / každých 15/30/60 minut / libovolný interval / každý den v HH:MM. Vlastní hodnoty se zadávají tmavým dialogem (běží ve vlákně okna Přehledu). Chování: interval se počítá od posledního úspěšného syncu (jedno jakého — ručního, po zasunutí, z časovače); bez připojeného USB časovač mlčky čeká, žádné chybové toasty; denní čas, který proběhl před spuštěním appky, se nedohání (start obstará hlídač USB). Config: `casovac`, `casovac_minuty`, `casovac_denne`. Testy rozšířeny na 32.
+
 **Etapa 7 — okno „Přehled" (HOTOVO 2026-07-31, Tomášovo zadání nad rámec původního plánu):** tmavé tkinter okno (vlastní trvalé vlákno + fronta příkazů; tmavá horní lišta přes DWM atribut 20). Obsah: historie synchronizací (nový soubor `holub-historie.json`, drží posledních 200 záznamů), seznam konfliktních kopií s tlačítky Otevřít kopii / Otevřít původní / Smazat kopii, a „Zkontrolovat změny" = synchronizace nanečisto (parametr `naostro=False` v obou sync funkcích — jen počítá, ničeho se nedotkne). Dvojklik na ikonu teď otevírá Přehled (dřív spouštěl sync). Testy rozšířeny na 30.
 
 ## Co to je
@@ -32,7 +34,7 @@ Malá Python appka v oznamovací oblasti Windows (ikona u hodin). Hlídá připo
 ## Otevřené otázky (zeptat se Tomáše před stavbou / během ní)
 
 1. **Cesta k Obsidian vaultu** — zatím neznámá. Není blokující: nastaví se dialogem při prvním spuštění (viz „Nastavení složky vaultu"), ale znát ji dřív se hodí na testování.
-2. **Bude USB trvale zastrčené v PC?** Pokud ano, přidat časovač (např. sync jednou za 30 min, jen když se něco změnilo). Pokud se zastrkává jen na zálohu, časovač netřeba. *(Otázka položena 2026-07-31, zatím bez odpovědi.)*
+2. **Bude USB trvale zastrčené v PC?** Pokud ano, přidat časovač (např. sync jednou za 30 min, jen když se něco změnilo). Pokud se zastrkává jen na zálohu, časovač netřeba. → **VYŘEŠENO 2026-07-31: Tomáš si časovač vyžádal** (denně v X + každých X minut), viz „Časovač" ve Stavu stavby.
 3. Název „Holub" je pracovní — Tomáš může přejmenovat.
 
 ## Technologie

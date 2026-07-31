@@ -63,6 +63,9 @@ conflicts and a dry-run check of what the next sync would do:
   version of a note wins. A conflict (the same note changed on both sides) is
   **never overwritten silently** — both versions are kept, the second one as
   `note (konflikt z USB).md`.
+- **Scheduled sync** — every 15/30/60 minutes, any interval you type in, or
+  once a day at a time you pick. Handy when the USB drive stays plugged in;
+  without the drive connected the timer just waits quietly.
 - **Windows notifications** when a sync finishes ("12 notes copied to USB ·
   3 s") or fails, with an explanation of what happened.
 - **Start with Windows** — toggled with one click in the menu.
@@ -112,6 +115,7 @@ vše synchronizováno · dnes 14:32     (all synced · today 14:32)
 🪟 Přehled a historie                (Overview & history)
 🔄 Synchronizovat teď                (Sync now)
 ⇄  Režim synchronizace ▸             (Sync mode: one-way / two-way)
+⏰ Automatická synchronizace ▸       (Scheduled sync: off / every X min / daily)
 📁 Otevřít zálohu na USB             (Open the backup on USB)
 📂 Zvolit složku vaultu…             (Choose vault folder…)
 🔌 Spárovat nový USB disk…           (Pair a new USB drive…)

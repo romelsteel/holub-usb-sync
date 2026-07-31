@@ -51,12 +51,16 @@ VYCHOZI_CONFIG = {
     "interval_kontroly_s": 5,
     "ignorovat": [".obsidian/workspace.json", ".obsidian/workspace-mobile.json"],
     "posledni_sync": "",
+    "casovac": "vypnuto",              # "vypnuto" | "interval" | "denne"
+    "casovac_minuty": 30,              # pro režim "interval"
+    "casovac_denne": "18:00",          # pro režim "denne" (HH:MM)
 }
 
 CFG = dict(VYCHOZI_CONFIG)
 
 # Sdílený stav appky. "stav" je jedno z: ceka / ok / sync / chyba / hotovo
-S = {"stav": "ceka", "usb": None, "bezi": True, "chyba_text": "", "vault_chybi": False}
+S = {"stav": "ceka", "usb": None, "bezi": True, "chyba_text": "",
+     "vault_chybi": False, "casovac_pokus": 0.0, "casovac_den": ""}
 IKONA = {"obj": None}          # pystray ikona (naplní se v main)
 ZAMEK_SYNCU = threading.Lock()  # sync nikdy nesmí běžet dvakrát naráz
 
@@ -783,6 +787,64 @@ def hlidac():
         time.sleep(max(2, int(CFG.get("interval_kontroly_s", 5))))
 
 
+def nastav_casovac(rezim, minuty=None):
+    CFG["casovac"] = rezim
+    if minuty is not None:
+        CFG["casovac_minuty"] = minuty
+    uloz_config()
+    if IKONA["obj"]:
+        IKONA["obj"].update_menu()
+
+
+def _cas_denne():
+    """Cíl denní synchronizace jako (hodina, minuta), nebo None."""
+    try:
+        hodina, minuta = CFG.get("casovac_denne", "18:00").split(":")
+        return int(hodina), int(minuta)
+    except ValueError:
+        return None
+
+
+def casovac_smycka():
+    """Automatická synchronizace podle času (menu ⏰).
+
+    Interval se počítá od posledního ÚSPĚŠNÉHO syncu (jedno jestli ručního,
+    po zasunutí, nebo z časovače) — takže se nesyncuje častěji, než je třeba.
+    Bez připojeného USB časovač mlčky čeká, žádné otravné chybové toasty."""
+    ted = datetime.now()
+    cil = _cas_denne()
+    if cil and (ted.hour, ted.minute) >= cil:
+        # dnešní čas už proběhl před spuštěním appky — nedohánět,
+        # sync při startu obstará hlídač USB
+        S["casovac_den"] = ted.date().isoformat()
+    while S["bezi"]:
+        time.sleep(20)
+        rezim = CFG.get("casovac", "vypnuto")
+        muze = S["usb"] and not S["vault_chybi"] and S["stav"] != "sync"
+        if rezim == "interval":
+            try:
+                minuty = max(1, int(CFG.get("casovac_minuty", 30)))
+            except (TypeError, ValueError):
+                minuty = 30
+            posledni = S["casovac_pokus"]
+            try:
+                posledni = max(posledni, datetime.fromisoformat(
+                    CFG.get("posledni_sync", "")).timestamp())
+            except ValueError:
+                pass
+            if muze and time.time() - posledni >= minuty * 60:
+                S["casovac_pokus"] = time.time()
+                akce_sync()
+        elif rezim == "denne":
+            cil = _cas_denne()
+            ted = datetime.now()
+            dnes = ted.date().isoformat()
+            if cil and S["casovac_den"] != dnes and (ted.hour, ted.minute) >= cil:
+                S["casovac_den"] = dnes  # dnešek odbytý i bez USB — dosync udělá hlídač
+                if muze:
+                    akce_sync()
+
+
 def animace():
     """Za letu holub mává křídly — dva snímky, ~0,6 s na cyklus."""
     horni = False
@@ -814,12 +876,22 @@ NAHLED = {"text": ""}
 KONFLIKTY = {"seznam": [], "verze": 0, "hledam": False}
 
 
-def akce_okno(_ikona=None, _polozka=None):
-    """Otevře okno Přehledu (nebo ho vytáhne dopředu, když už existuje)."""
+def zajisti_vlakno_okna():
     if OKNO["fronta"] is None:
         OKNO["fronta"] = queue.Queue()
         threading.Thread(target=vlakno_okna, daemon=True).start()
+
+
+def akce_okno(_ikona=None, _polozka=None):
+    """Otevře okno Přehledu (nebo ho vytáhne dopředu, když už existuje)."""
+    zajisti_vlakno_okna()
     OKNO["fronta"].put("ukaz")
+
+
+def akce_casovac_dialog(druh):
+    """Otevře dialog pro vlastní interval ("interval") nebo denní čas ("denne")."""
+    zajisti_vlakno_okna()
+    OKNO["fronta"].put("dialog-" + druh)
 
 
 def najdi_konflikty():
@@ -895,6 +967,14 @@ def vlakno_okna():
     koren = tk.Tk()
     koren.withdraw()
     prvky = {}  # widgety a obrázky (obrázky tu musí zůstat, jinak je Tk pustí)
+    try:  # holub v titulku — zdědí ho okno Přehledu i dialogy
+        zajisti_toast_ikonu()
+        znak = tk.PhotoImage(file=CESTA_TOAST_IKONY)
+        koren.iconphoto(True, znak)
+        prvky["znak"] = znak
+        prvky["znak_maly"] = znak.subsample(2)
+    except Exception:
+        pass
 
     def ztmav_titulek(okno):
         """Řekne Windows, ať je horní lišta okna tmavá (DWM atribut 20)."""
@@ -932,14 +1012,6 @@ def vlakno_okna():
         okno.minsize(640, 560)
         okno.protocol("WM_DELETE_WINDOW", okno.withdraw)  # zavření jen schová
         ztmav_titulek(okno)
-        try:
-            zajisti_toast_ikonu()
-            znak = tk.PhotoImage(file=CESTA_TOAST_IKONY)
-            okno.iconphoto(False, znak)
-            prvky["znak"] = znak
-            prvky["znak_maly"] = znak.subsample(2)
-        except Exception:
-            pass
 
         # hlavička: holub + stavový řádek
         hlava = tk.Frame(okno, bg=B["pozadi"])
@@ -1076,6 +1148,75 @@ def vlakno_okna():
                 prekresli_konflikty()
         koren.after(700, obnov)
 
+    def zeptej(druh):
+        """Malý tmavý dialog: vlastní interval v minutách / denní čas HH:MM."""
+        dialog = tk.Toplevel(koren)
+        dialog.title("Automatická synchronizace")
+        dialog.configure(bg=B["pozadi"])
+        dialog.resizable(False, False)
+        dialog.geometry("+340+280")
+        ztmav_titulek(dialog)
+        if druh == "interval":
+            popis = "Jak často se má synchronizovat?\nZadej počet minut (1–1440):"
+            vychozi = str(CFG.get("casovac_minuty", 30))
+        else:
+            popis = ("V kolik hodin se má každý den synchronizovat?\n"
+                     "Zadej čas jako HH:MM (třeba 18:00):")
+            vychozi = CFG.get("casovac_denne", "18:00")
+        tk.Label(dialog, text=popis, bg=B["pozadi"], fg=B["text"],
+                 font=("Segoe UI", 10), justify="left").pack(
+            padx=16, pady=(14, 6), anchor="w")
+        pole = tk.Entry(dialog, bg=B["karta"], fg=B["text"],
+                        insertbackground=B["text"], relief="flat",
+                        font=("Segoe UI", 11), width=10)
+        pole.insert(0, vychozi)
+        pole.pack(padx=16, pady=4, anchor="w", ipady=4, ipadx=6)
+        varovani = tk.Label(dialog, text="", bg=B["pozadi"], fg=B["cervena"],
+                            font=("Segoe UI", 9))
+        varovani.pack(padx=16, anchor="w")
+
+        def potvrd():
+            zadani = pole.get().strip()
+            if druh == "interval":
+                try:
+                    minuty = int(zadani)
+                except ValueError:
+                    minuty = 0
+                if not 1 <= minuty <= 1440:
+                    varovani.config(text="Zadej celé číslo od 1 do 1440.")
+                    return
+                CFG["casovac"] = "interval"
+                CFG["casovac_minuty"] = minuty
+            else:
+                casti = zadani.split(":")
+                try:
+                    hodina, minuta = int(casti[0]), int(casti[1])
+                except (ValueError, IndexError):
+                    hodina = -1
+                    minuta = -1
+                if not (0 <= hodina <= 23 and 0 <= minuta <= 59):
+                    varovani.config(text="Zadej čas jako HH:MM, třeba 18:00.")
+                    return
+                CFG["casovac"] = "denne"
+                CFG["casovac_denne"] = f"{hodina:02d}:{minuta:02d}"
+                ted = datetime.now()  # dnešní už proběhlý čas nedohánět
+                S["casovac_den"] = (ted.date().isoformat()
+                                    if (ted.hour, ted.minute) >= (hodina, minuta)
+                                    else "")
+            uloz_config()
+            if IKONA["obj"]:
+                IKONA["obj"].update_menu()
+            dialog.destroy()
+
+        rada = tk.Frame(dialog, bg=B["pozadi"])
+        rada.pack(fill="x", padx=16, pady=(6, 14))
+        tlacitko(rada, "Uložit", potvrd).pack(side="right", padx=(8, 0))
+        tlacitko(rada, "Zrušit", dialog.destroy).pack(side="right")
+        pole.bind("<Return>", lambda _u: potvrd())
+        dialog.attributes("-topmost", True)  # přichází z tray menu, ať nezapadne
+        dialog.lift()
+        pole.focus_force()
+
     def zpracuj_frontu():
         try:
             while True:
@@ -1094,6 +1235,10 @@ def vlakno_okna():
                         prvky["okno"].focus_force()
                     except Exception:
                         pass
+                elif prikaz == "dialog-interval":
+                    zeptej("interval")
+                elif prikaz == "dialog-denne":
+                    zeptej("denne")
         except queue.Empty:
             pass
         koren.after(200, zpracuj_frontu)
@@ -1105,6 +1250,22 @@ def vlakno_okna():
 # ---------------------------------------------------------------------------
 # Menu a start
 # ---------------------------------------------------------------------------
+
+
+def text_jineho_intervalu(_polozka=None):
+    if (CFG.get("casovac") == "interval"
+            and CFG.get("casovac_minuty") not in (15, 30, 60)):
+        return f"Jiný interval ({CFG['casovac_minuty']} min)…"
+    return "Jiný interval…"
+
+
+def text_denniho_casu(_polozka=None):
+    return f"Každý den v {CFG.get('casovac_denne', '18:00')}…"
+
+
+def je_interval(minuty):
+    return (CFG.get("casovac") == "interval"
+            and CFG.get("casovac_minuty") == minuty)
 
 
 def postav_menu():
@@ -1126,6 +1287,32 @@ def postav_menu():
                 checked=lambda _p: CFG.get("rezim") == "obousmerny",
                 radio=True),
         )),
+        pystray.MenuItem("⏰ Automatická synchronizace", pystray.Menu(
+            pystray.MenuItem(
+                "Vypnutá", lambda *_: nastav_casovac("vypnuto"),
+                checked=lambda _p: CFG.get("casovac", "vypnuto") == "vypnuto",
+                radio=True),
+            pystray.MenuItem(
+                "Každých 15 minut", lambda *_: nastav_casovac("interval", 15),
+                checked=lambda _p: je_interval(15), radio=True),
+            pystray.MenuItem(
+                "Každých 30 minut", lambda *_: nastav_casovac("interval", 30),
+                checked=lambda _p: je_interval(30), radio=True),
+            pystray.MenuItem(
+                "Každou hodinu", lambda *_: nastav_casovac("interval", 60),
+                checked=lambda _p: je_interval(60), radio=True),
+            pystray.MenuItem(
+                text_jineho_intervalu,
+                lambda *_: akce_casovac_dialog("interval"),
+                checked=lambda _p: (CFG.get("casovac") == "interval"
+                                    and CFG.get("casovac_minuty")
+                                    not in (15, 30, 60)),
+                radio=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                text_denniho_casu, lambda *_: akce_casovac_dialog("denne"),
+                checked=lambda _p: CFG.get("casovac") == "denne", radio=True),
+        )),
         pystray.MenuItem("📁 Otevřít zálohu na USB", akce_otevrit_zalohu),
         pystray.MenuItem("📂 Zvolit složku vaultu…", akce_zvolit_vault),
         pystray.MenuItem("🔌 Spárovat nový USB disk…", akce_parovat),
@@ -1140,6 +1327,7 @@ def po_startu(ikona):
     ikona.visible = True
     threading.Thread(target=hlidac, daemon=True).start()
     threading.Thread(target=animace, daemon=True).start()
+    threading.Thread(target=casovac_smycka, daemon=True).start()
     if not CFG.get("vault"):
         toast("Ahoj, tady Holub 🕊️",
               "Budu ti zálohovat poznámky na USB. Nejdřív mi ukaž složku vaultu.")

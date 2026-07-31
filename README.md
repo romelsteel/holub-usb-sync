@@ -40,13 +40,21 @@ While syncing, it flies with a note in its beak:
 
 ![Flight animation](img/holub-let.gif)
 
+Double-clicking the icon opens the overview window — sync history, unresolved
+conflicts and a dry-run check of what the next sync would do:
+
+![Overview window](img/holub-okno.png)
+
 ## Features
 
 - **Recognizes its USB drive** by a hidden `.holub-usb` marker file — works
   even when the drive gets a different letter (E:, F:…). It never writes to
   an unknown drive.
-- **Syncs by itself when you plug the USB in**, manually from the menu, or by
-  double-clicking the icon.
+- **Syncs by itself when you plug the USB in**, or manually from the menu.
+- **Overview window** (double-click the tray icon) — history of past syncs,
+  a list of unresolved conflicts with one-click open/delete, and a "check
+  changes" button that shows what a sync *would* do without touching a single
+  file. Dark by design.
 - **One-way mode (PC → USB)** — the default. The USB drive is an exact mirror
   of the vault: changed notes get copied, whatever you delete on the PC
   disappears from the USB too. In this mode the app **never writes to the
@@ -101,6 +109,7 @@ E:\
 Holub
 vše synchronizováno · dnes 14:32     (all synced · today 14:32)
 ──────────────────────────────
+🪟 Přehled a historie                (Overview & history)
 🔄 Synchronizovat teď                (Sync now)
 ⇄  Režim synchronizace ▸             (Sync mode: one-way / two-way)
 📁 Otevřít zálohu na USB             (Open the backup on USB)

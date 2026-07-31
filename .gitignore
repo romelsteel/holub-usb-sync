@@ -4,4 +4,5 @@ config.json
 # soubory, které si appka vyrábí sama za běhu
 holub.log
 holub-ikona.png
+holub-historie.json
 __pycache__/

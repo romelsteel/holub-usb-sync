@@ -37,11 +37,20 @@ Při synchronizaci letí s poznámkou v zobáku:
 
 ![Animace letu](img/holub-let.gif)
 
+Dvojklik na ikonu otevře okno Přehledu — historie synchronizací, nevyřešené
+konflikty a kontrola nanečisto, co by příští synchronizace udělala:
+
+![Okno Přehledu](img/holub-okno.png)
+
 ## Co umí
 
 - **Pozná svůj USB disk** podle skrytého souboru `.holub-usb` — funguje, i když
   disk dostane jiné písmeno (E:, F:…). Na cizí disk nikdy nezapisuje.
-- **Synchronizuje sám při zasunutí USB**, ručně z menu, nebo dvojklikem na ikonu.
+- **Synchronizuje sám při zasunutí USB**, nebo ručně z menu.
+- **Okno Přehledu** (dvojklik na ikonu) — historie synchronizací, seznam
+  nevyřešených konfliktů s tlačítky otevřít/smazat a „Zkontrolovat změny",
+  které ukáže, co *by* synchronizace udělala, aniž by sáhla na jediný soubor.
+  Tmavé od základu.
 - **Jednosměrný režim (PC → USB)** — výchozí. USB je přesné zrcadlo vaultu:
   změněné poznámky se zkopírují, co smažeš na PC, zmizí i na USB. V tomto
   režimu appka **na PC nikdy nezapisuje** — jen čte.
@@ -93,6 +102,7 @@ E:\
 Holub
 vše synchronizováno · dnes 14:32
 ──────────────────────────────
+🪟 Přehled a historie
 🔄 Synchronizovat teď
 ⇄  Režim synchronizace        ▸
 📁 Otevřít zálohu na USB

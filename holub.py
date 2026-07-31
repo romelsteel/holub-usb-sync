@@ -11,6 +11,7 @@ Spuštění bez černého okna:  pythonw holub.py
 import ctypes
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,7 @@ if "--config" in sys.argv:  # jiný config pro testování na cvičném vaultu
 
 CESTA_LOG = os.path.join(SLOZKA, "holub.log")
 CESTA_TOAST_IKONY = os.path.join(SLOZKA, "holub-ikona.png")
+CESTA_HISTORIE = os.path.join(SLOZKA, "holub-historie.json")
 CESTA_AUTOSTART = os.path.join(
     os.environ.get("APPDATA", ""), "Microsoft", "Windows",
     "Start Menu", "Programs", "Startup", "Holub.pyw")
@@ -234,6 +236,26 @@ def uloz_config():
         loguj("Nepodařilo se uložit config:\n" + traceback.format_exc())
 
 
+def nacti_historii():
+    try:
+        with open(CESTA_HISTORIE, encoding="utf-8") as soubor:
+            return json.load(soubor)
+    except (OSError, ValueError):
+        return []
+
+
+def zapis_historii(zprava, chyba=False):
+    """Přidá záznam do historie synchronizací (drží se posledních 200)."""
+    zaznamy = nacti_historii()
+    zaznamy.append({"kdy": datetime.now().isoformat(timespec="seconds"),
+                    "rezim": CFG.get("rezim"), "zprava": zprava, "chyba": chyba})
+    try:
+        with open(CESTA_HISTORIE, "w", encoding="utf-8") as soubor:
+            json.dump(zaznamy[-200:], soubor, ensure_ascii=False, indent=1)
+    except OSError:
+        loguj("Nepodařilo se zapsat historii:\n" + traceback.format_exc())
+
+
 def popis_poctu(pocet, tvary):
     """České skloňování: tvary = (1 kus, 2–4 kusy, 5+ kusů)."""
     if pocet == 1:
@@ -343,24 +365,29 @@ def smaz_prazdne_slozky(koren):
             pass
 
 
-def sync_jednosmerny(vault, cil, ignorovat):
-    """Zrcadlo PC → USB. Na PC nesahá — jen čte."""
-    os.makedirs(cil, exist_ok=True)
+def sync_jednosmerny(vault, cil, ignorovat, naostro=True):
+    """Zrcadlo PC → USB. Na PC nesahá — jen čte.
+
+    S naostro=False jen spočítá, co by se stalo, a ničeho se nedotkne."""
+    if naostro:
+        os.makedirs(cil, exist_ok=True)
     na_pc = projdi(vault, ignorovat)
     na_usb = projdi(cil, ignorovat)
 
     zkopirovano = 0
     for rel, udaje in na_pc.items():
         if rel not in na_usb or not stejne(udaje, na_usb[rel]):
-            zkopiruj(vault, cil, rel)
+            if naostro:
+                zkopiruj(vault, cil, rel)
             zkopirovano += 1
 
     smazano = 0
     for rel in na_usb:
         if rel not in na_pc:
-            os.remove(os.path.join(cil, rel))
+            if naostro:
+                os.remove(os.path.join(cil, rel))
             smazano += 1
-    if smazano:
+    if smazano and naostro:
         smaz_prazdne_slozky(cil)
     return zkopirovano, smazano
 
@@ -378,9 +405,12 @@ def konfliktni_jmeno(rel, vault, cil):
         cislo += 1
 
 
-def sync_obousmerny(vault, cil, cesta_snimku, ignorovat):
-    """PC ⇄ USB. Snímek posledního syncu rozlišuje „smazáno" od „nové"."""
-    os.makedirs(cil, exist_ok=True)
+def sync_obousmerny(vault, cil, cesta_snimku, ignorovat, naostro=True):
+    """PC ⇄ USB. Snímek posledního syncu rozlišuje „smazáno" od „nové".
+
+    S naostro=False jen spočítá, co by se stalo, a ničeho se nedotkne."""
+    if naostro:
+        os.makedirs(cil, exist_ok=True)
     na_pc = projdi(vault, ignorovat)
     na_usb = projdi(cil, ignorovat)
 
@@ -406,40 +436,52 @@ def sync_obousmerny(vault, cil, cesta_snimku, ignorovat):
             if zmena_pc and zmena_usb:
                 # Konflikt: verze z PC si nechá původní jméno, verze z USB
                 # se uloží vedle ní — na obou stranách, nic se neztratí.
-                kopie = konfliktni_jmeno(rel, vault, cil)
-                shutil.copy2(os.path.join(cil, rel), os.path.join(cil, kopie))
-                shutil.copy2(os.path.join(cil, rel), os.path.join(vault, kopie))
-                zkopiruj(vault, cil, rel)
+                if naostro:
+                    kopie = konfliktni_jmeno(rel, vault, cil)
+                    shutil.copy2(os.path.join(cil, rel), os.path.join(cil, kopie))
+                    shutil.copy2(os.path.join(cil, rel), os.path.join(vault, kopie))
+                    zkopiruj(vault, cil, rel)
                 vysledek["konflikty"] += 1
             elif zmena_pc:
-                zkopiruj(vault, cil, rel)
+                if naostro:
+                    zkopiruj(vault, cil, rel)
                 vysledek["na_usb"] += 1
             elif zmena_usb:
-                zkopiruj(cil, vault, rel)
+                if naostro:
+                    zkopiruj(cil, vault, rel)
                 vysledek["na_pc"] += 1
             else:
                 # Hraniční případ (snímek sedí na obě strany, přesto se liší):
                 # vyhrává novější verze.
                 if na_pc[rel][0] >= na_usb[rel][0]:
-                    zkopiruj(vault, cil, rel)
+                    if naostro:
+                        zkopiruj(vault, cil, rel)
                     vysledek["na_usb"] += 1
                 else:
-                    zkopiruj(cil, vault, rel)
+                    if naostro:
+                        zkopiruj(cil, vault, rel)
                     vysledek["na_pc"] += 1
         elif je_pc:
             if rel in snimek and not zmena_pc:
-                os.remove(os.path.join(vault, rel))   # smazáno na USB
+                if naostro:
+                    os.remove(os.path.join(vault, rel))   # smazáno na USB
                 vysledek["smazano_pc"] += 1
             else:
-                zkopiruj(vault, cil, rel)             # nové na PC (úprava poráží smazání)
+                if naostro:
+                    zkopiruj(vault, cil, rel)             # nové na PC (úprava poráží smazání)
                 vysledek["na_usb"] += 1
         else:
             if rel in snimek and not zmena_usb:
-                os.remove(os.path.join(cil, rel))     # smazáno na PC
+                if naostro:
+                    os.remove(os.path.join(cil, rel))     # smazáno na PC
                 vysledek["smazano_usb"] += 1
             else:
-                zkopiruj(cil, vault, rel)             # nové na USB
+                if naostro:
+                    zkopiruj(cil, vault, rel)             # nové na USB
                 vysledek["na_pc"] += 1
+
+    if not naostro:
+        return vysledek
 
     if vysledek["smazano_usb"]:
         smaz_prazdne_slozky(cil)
@@ -489,7 +531,7 @@ def formatuj_cas(sekundy):
     return f"{round(sekundy)} s"
 
 
-def zprava_jednosmerna(zkopirovano, smazano, trvani):
+def zprava_jednosmerna(zkopirovano, smazano, trvani=None):
     casti = []
     if zkopirovano:
         casti.append(popis_poctu(zkopirovano, (
@@ -501,10 +543,12 @@ def zprava_jednosmerna(zkopirovano, smazano, trvani):
             "smazána na USB", "smazány na USB", "smazáno na USB")))
     if not casti:
         casti.append("vše už bylo aktuální")
-    return " · ".join(casti + [formatuj_cas(trvani)])
+    if trvani is not None:
+        casti.append(formatuj_cas(trvani))
+    return " · ".join(casti)
 
 
-def zprava_obousmerna(vysledek, trvani):
+def zprava_obousmerna(vysledek, trvani=None):
     casti = []
     if vysledek["na_usb"]:
         casti.append(f"{vysledek['na_usb']} → USB")
@@ -518,7 +562,9 @@ def zprava_obousmerna(vysledek, trvani):
                                  ("konflikt", "konflikty", "konfliktů")))
     if not casti:
         casti.append("vše už bylo aktuální")
-    return " · ".join(casti + [formatuj_cas(trvani)])
+    if trvani is not None:
+        casti.append(formatuj_cas(trvani))
+    return " · ".join(casti)
 
 
 def synchronizuj():
@@ -559,6 +605,7 @@ def synchronizuj():
 
         CFG["posledni_sync"] = datetime.now().isoformat(timespec="seconds")
         uloz_config()
+        zapis_historii(zprava)
         nastav_stav("hotovo")
         toast("Synchronizace dokončena", zprava)
         time.sleep(1.5)  # zelená fajfka chvíli svítí…
@@ -576,10 +623,12 @@ def synchronizuj():
         else:
             text = f"{chyba.strerror or chyba}. Zkus synchronizaci spustit znovu."
             kratce = "chyba při synchronizaci"
+        zapis_historii(kratce, chyba=True)
         nastav_stav("chyba", kratce)
         toast("Synchronizace selhala", text)
     except Exception:
         loguj(traceback.format_exc())
+        zapis_historii("neočekávaná chyba — viz holub.log", chyba=True)
         nastav_stav("chyba", "neočekávaná chyba — viz holub.log")
         toast("Synchronizace selhala",
               "Neočekávaná chyba, podrobnosti jsou v souboru holub.log.")
@@ -696,6 +745,8 @@ def akce_autostart(ikona=None, _polozka=None):
 
 def akce_konec(ikona, _polozka=None):
     S["bezi"] = False
+    if OKNO["fronta"] is not None:
+        OKNO["fronta"].put("konec")
     ikona.stop()
 
 # ---------------------------------------------------------------------------
@@ -745,6 +796,313 @@ def animace():
         time.sleep(0.3)
 
 # ---------------------------------------------------------------------------
+# Okno „Přehled" — historie, konflikty, kontrola změn. Tmavý vzhled.
+#
+# tkinter musí žít celý v jednom vlákně, proto má okno vlastní trvalé vlákno
+# a ostatní vlákna s ním mluví jen přes frontu OKNO["fronta"] a sdílené
+# slovníky (NAHLED, KONFLIKTY), které si okno samo periodicky čte.
+# ---------------------------------------------------------------------------
+
+BARVY = {
+    "pozadi": "#1f2127", "karta": "#282b33", "text": "#e8eaf0",
+    "tlumena": "#9aa1ad", "akcent": "#3fae7a", "cervena": "#e06c6c",
+    "tlacitko": "#2f333c", "tlacitko_aktivni": "#3a3f4a", "vyber": "#3a3f4a",
+}
+
+OKNO = {"fronta": None}
+NAHLED = {"text": ""}
+KONFLIKTY = {"seznam": [], "verze": 0, "hledam": False}
+
+
+def akce_okno(_ikona=None, _polozka=None):
+    """Otevře okno Přehledu (nebo ho vytáhne dopředu, když už existuje)."""
+    if OKNO["fronta"] is None:
+        OKNO["fronta"] = queue.Queue()
+        threading.Thread(target=vlakno_okna, daemon=True).start()
+    OKNO["fronta"].put("ukaz")
+
+
+def najdi_konflikty():
+    """Na pozadí projde vault a sesbírá konfliktní kopie poznámek."""
+    if KONFLIKTY["hledam"]:
+        return
+    KONFLIKTY["hledam"] = True
+
+    def hledej():
+        nalezene = []
+        vault = CFG.get("vault")
+        if vault and os.path.isdir(vault):
+            for cesta, _slozky, jmena in os.walk(vault):
+                for jmeno in jmena:
+                    if " (konflikt z USB" in jmeno:
+                        nalezene.append(os.path.relpath(
+                            os.path.join(cesta, jmeno), vault).replace("\\", "/"))
+        KONFLIKTY["seznam"] = sorted(nalezene)
+        KONFLIKTY["verze"] += 1
+        KONFLIKTY["hledam"] = False
+
+    threading.Thread(target=hledej, daemon=True).start()
+
+
+def zkontroluj_zmeny():
+    """Spočítá nanečisto, co by synchronizace udělala — nic nekopíruje."""
+    if not ZAMEK_SYNCU.acquire(blocking=False):
+        NAHLED["text"] = "Právě probíhá synchronizace…"
+        return
+    try:
+        vault = CFG.get("vault")
+        usb = S["usb"] or najdi_usb()
+        if not vault or not os.path.isdir(vault):
+            NAHLED["text"] = "Nenacházím složku vaultu."
+            return
+        if usb is None:
+            NAHLED["text"] = "USB disk není připojený."
+            return
+        cil = os.path.join(usb, SLOZKA_ZALOHY)
+        ignorovat = set(CFG.get("ignorovat", []))
+        if CFG.get("rezim") == "obousmerny":
+            vysledek = sync_obousmerny(vault, cil,
+                                       os.path.join(usb, SOUBOR_SNIMKU),
+                                       ignorovat, naostro=False)
+            if all(pocet == 0 for pocet in vysledek.values()):
+                NAHLED["text"] = "Vše je synchronizované — není co přenášet."
+            else:
+                NAHLED["text"] = "Čeká: " + zprava_obousmerna(vysledek)
+        else:
+            zkopirovano, smazano = sync_jednosmerny(vault, cil, ignorovat,
+                                                    naostro=False)
+            if not zkopirovano and not smazano:
+                NAHLED["text"] = "Vše je synchronizované — není co přenášet."
+            else:
+                NAHLED["text"] = "Čeká: " + zprava_jednosmerna(zkopirovano, smazano)
+    except Exception:
+        loguj(traceback.format_exc())
+        NAHLED["text"] = "Kontrola se nepovedla — podrobnosti v holub.log."
+    finally:
+        ZAMEK_SYNCU.release()
+
+
+def vlakno_okna():
+    import tkinter as tk
+    from tkinter import messagebox
+
+    try:  # ostré vykreslení na displejích se zvětšením
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
+    B = BARVY
+    koren = tk.Tk()
+    koren.withdraw()
+    prvky = {}  # widgety a obrázky (obrázky tu musí zůstat, jinak je Tk pustí)
+
+    def ztmav_titulek(okno):
+        """Řekne Windows, ať je horní lišta okna tmavá (DWM atribut 20)."""
+        try:
+            okno.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(okno.winfo_id())
+            hodnota = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(hodnota), ctypes.sizeof(hodnota))
+        except Exception:
+            pass
+
+    def tlacitko(rodic, text, prikaz):
+        return tk.Button(
+            rodic, text=text, command=prikaz, relief="flat", bd=0,
+            bg=B["tlacitko"], fg=B["text"],
+            activebackground=B["tlacitko_aktivni"], activeforeground=B["text"],
+            font=("Segoe UI", 10), padx=12, pady=6, cursor="hand2")
+
+    def nadpis(rodic, text):
+        return tk.Label(rodic, text=text, bg=B["pozadi"], fg=B["text"],
+                        font=("Segoe UI Semibold", 11), anchor="w")
+
+    def seznam_widget(rodic, vyska):
+        return tk.Listbox(
+            rodic, bg=B["karta"], fg=B["text"], selectbackground=B["vyber"],
+            selectforeground=B["text"], font=("Segoe UI", 10), bd=0,
+            highlightthickness=0, activestyle="none", height=vyska)
+
+    def postav():
+        okno = tk.Toplevel(koren)
+        okno.title("Holub — přehled")
+        okno.configure(bg=B["pozadi"])
+        okno.geometry("700x680+200+120")
+        okno.minsize(640, 560)
+        okno.protocol("WM_DELETE_WINDOW", okno.withdraw)  # zavření jen schová
+        ztmav_titulek(okno)
+        try:
+            zajisti_toast_ikonu()
+            znak = tk.PhotoImage(file=CESTA_TOAST_IKONY)
+            okno.iconphoto(False, znak)
+            prvky["znak"] = znak
+            prvky["znak_maly"] = znak.subsample(2)
+        except Exception:
+            pass
+
+        # hlavička: holub + stavový řádek
+        hlava = tk.Frame(okno, bg=B["pozadi"])
+        hlava.pack(fill="x", padx=16, pady=(14, 8))
+        if "znak_maly" in prvky:
+            tk.Label(hlava, image=prvky["znak_maly"], bg=B["pozadi"]).pack(
+                side="left", padx=(0, 12))
+        texty = tk.Frame(hlava, bg=B["pozadi"])
+        texty.pack(side="left")
+        tk.Label(texty, text="Holub", bg=B["pozadi"], fg=B["text"],
+                 font=("Segoe UI Semibold", 16), anchor="w").pack(anchor="w")
+        prvky["stav"] = tk.Label(texty, text="", bg=B["pozadi"],
+                                 fg=B["tlumena"], font=("Segoe UI", 10),
+                                 anchor="w")
+        prvky["stav"].pack(anchor="w")
+
+        # řada tlačítek + řádek s výsledkem kontroly
+        rada = tk.Frame(okno, bg=B["pozadi"])
+        rada.pack(fill="x", padx=16, pady=(0, 2))
+        tlacitko(rada, "🔄  Synchronizovat teď", akce_sync).pack(
+            side="left", padx=(0, 8))
+
+        def spust_kontrolu():
+            NAHLED["text"] = "Počítám…"
+            threading.Thread(target=zkontroluj_zmeny, daemon=True).start()
+
+        tlacitko(rada, "🔍  Zkontrolovat změny", spust_kontrolu).pack(
+            side="left", padx=(0, 8))
+        tlacitko(rada, "📁  Otevřít zálohu", akce_otevrit_zalohu).pack(side="left")
+        prvky["nahled"] = tk.Label(okno, text="", bg=B["pozadi"],
+                                   fg=B["akcent"], font=("Segoe UI", 10),
+                                   anchor="w")
+        prvky["nahled"].pack(fill="x", padx=18, pady=(4, 8))
+
+        # konflikty — kotví se ke spodnímu okraji, aby je nic nevytlačilo ven
+        rada_konflikty = tk.Frame(okno, bg=B["pozadi"])
+        rada_konflikty.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
+        ram_konflikty = tk.Frame(okno, bg=B["karta"])
+        ram_konflikty.pack(side="bottom", fill="x", padx=16, pady=(6, 6))
+        nadpis(okno, "Konflikty k vyřešení").pack(side="bottom", fill="x", padx=16)
+        prvky["konflikty"] = seznam_widget(ram_konflikty, 3)
+        prvky["konflikty"].pack(fill="x", padx=8, pady=6)
+        tlacitko(rada_konflikty, "Otevřít kopii",
+                 lambda: otevri_konflikt(puvodni=False)).pack(side="left", padx=(0, 8))
+        tlacitko(rada_konflikty, "Otevřít původní",
+                 lambda: otevri_konflikt(puvodni=True)).pack(side="left", padx=(0, 8))
+        tlacitko(rada_konflikty, "Smazat kopii…", smaz_konflikt).pack(side="left")
+
+        # historie synchronizací — vyplní zbytek okna
+        nadpis(okno, "Historie synchronizací").pack(fill="x", padx=16)
+        ram_historie = tk.Frame(okno, bg=B["karta"])
+        ram_historie.pack(fill="both", expand=True, padx=16, pady=(6, 10))
+        prvky["historie"] = seznam_widget(ram_historie, 6)
+        posuvnik = tk.Scrollbar(ram_historie, command=prvky["historie"].yview)
+        prvky["historie"].config(yscrollcommand=posuvnik.set)
+        posuvnik.pack(side="right", fill="y")
+        prvky["historie"].pack(fill="both", expand=True, padx=8, pady=6)
+
+        prvky["okno"] = okno
+        prvky["mtime_historie"] = "nikdy"
+        prvky["verze_konfliktu"] = -1
+
+    def vybrany_konflikt():
+        vyber = prvky["konflikty"].curselection()
+        if not vyber or vyber[0] >= len(KONFLIKTY["seznam"]):
+            return None
+        return KONFLIKTY["seznam"][vyber[0]]
+
+    def otevri_konflikt(puvodni):
+        rel = vybrany_konflikt()
+        if rel is None:
+            return
+        if puvodni:  # z „k (konflikt z USB).md" udělá zpět „k.md"
+            rel = rel.split(" (konflikt z USB")[0] + os.path.splitext(rel)[1]
+        plna = os.path.join(CFG.get("vault", ""), rel)
+        if os.path.exists(plna):
+            os.startfile(plna)
+
+    def smaz_konflikt():
+        rel = vybrany_konflikt()
+        if rel is None:
+            return
+        if messagebox.askyesno(
+                "Smazat konfliktní kopii?",
+                f"Opravdu smazat „{rel}“?\n\nUdělej to, až budeš mít obsah obou "
+                "verzí srovnaný — smazání nejde vrátit.",
+                parent=prvky["okno"]):
+            try:
+                os.remove(os.path.join(CFG.get("vault", ""), rel))
+            except OSError:
+                loguj(traceback.format_exc())
+            najdi_konflikty()
+
+    def prekresli_historii():
+        seznam = prvky["historie"]
+        seznam.delete(0, "end")
+        zaznamy = nacti_historii()
+        if not zaznamy:
+            seznam.insert("end", "  zatím žádná synchronizace")
+            seznam.itemconfig(0, fg=B["tlumena"])
+            return
+        for zaznam in reversed(zaznamy):
+            sipka = "⇄" if zaznam.get("rezim") == "obousmerny" else "→"
+            seznam.insert("end", f"  {hezky_cas(zaznam.get('kdy', ''))}   "
+                                 f"{sipka}   {zaznam.get('zprava', '')}")
+            if zaznam.get("chyba"):
+                seznam.itemconfig("end", fg=B["cervena"])
+
+    def prekresli_konflikty():
+        seznam = prvky["konflikty"]
+        seznam.delete(0, "end")
+        if not KONFLIKTY["seznam"]:
+            seznam.insert("end", "  žádné konflikty — všechno v klidu")
+            seznam.itemconfig(0, fg=B["tlumena"])
+            return
+        for rel in KONFLIKTY["seznam"]:
+            seznam.insert("end", "  " + rel)
+
+    def obnov():
+        """Periodické překreslení z sdíleného stavu (běží jen když je okno vidět)."""
+        if "okno" in prvky and prvky["okno"].winfo_viewable():
+            prvky["stav"].config(text=stavovy_text())
+            prvky["nahled"].config(text=NAHLED["text"])
+            try:
+                mtime = os.path.getmtime(CESTA_HISTORIE)
+            except OSError:
+                mtime = None
+            if mtime != prvky["mtime_historie"]:
+                prvky["mtime_historie"] = mtime
+                prekresli_historii()
+                najdi_konflikty()
+            if prvky["verze_konfliktu"] != KONFLIKTY["verze"]:
+                prvky["verze_konfliktu"] = KONFLIKTY["verze"]
+                prekresli_konflikty()
+        koren.after(700, obnov)
+
+    def zpracuj_frontu():
+        try:
+            while True:
+                prikaz = OKNO["fronta"].get_nowait()
+                if prikaz == "konec":
+                    koren.quit()
+                    return
+                if prikaz == "ukaz":
+                    if "okno" not in prvky:
+                        postav()
+                        prekresli_historii()
+                        najdi_konflikty()
+                    prvky["okno"].deiconify()
+                    prvky["okno"].lift()
+                    try:
+                        prvky["okno"].focus_force()
+                    except Exception:
+                        pass
+        except queue.Empty:
+            pass
+        koren.after(200, zpracuj_frontu)
+
+    koren.after(100, zpracuj_frontu)
+    koren.after(400, obnov)
+    koren.mainloop()
+
+# ---------------------------------------------------------------------------
 # Menu a start
 # ---------------------------------------------------------------------------
 
@@ -754,7 +1112,8 @@ def postav_menu():
         pystray.MenuItem("Holub", None, enabled=False),
         pystray.MenuItem(stavovy_text, None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("🔄 Synchronizovat teď", akce_sync, default=True),
+        pystray.MenuItem("🪟 Přehled a historie", akce_okno, default=True),
+        pystray.MenuItem("🔄 Synchronizovat teď", akce_sync),
         pystray.MenuItem("⇄ Režim synchronizace", pystray.Menu(
             pystray.MenuItem(
                 "Jednosměrný (PC → USB)",

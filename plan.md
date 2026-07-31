@@ -10,6 +10,8 @@
 
 Odchylky od plánu: autostart se dělá malým souborem `Holub.pyw` ve složce Po spuštění (ne zástupcem `.lnk` — výsledek stejný, jednodušší na výrobu); navíc přibyl přepínač `--config` pro testování a zámek proti dvojímu spuštění appky.
 
+**Etapa 7 — okno „Přehled" (HOTOVO 2026-07-31, Tomášovo zadání nad rámec původního plánu):** tmavé tkinter okno (vlastní trvalé vlákno + fronta příkazů; tmavá horní lišta přes DWM atribut 20). Obsah: historie synchronizací (nový soubor `holub-historie.json`, drží posledních 200 záznamů), seznam konfliktních kopií s tlačítky Otevřít kopii / Otevřít původní / Smazat kopii, a „Zkontrolovat změny" = synchronizace nanečisto (parametr `naostro=False` v obou sync funkcích — jen počítá, ničeho se nedotkne). Dvojklik na ikonu teď otevírá Přehled (dřív spouštěl sync). Testy rozšířeny na 30.
+
 ## Co to je
 
 Malá Python appka v oznamovací oblasti Windows (ikona u hodin). Hlídá připojení spárovaného USB disku a synchronizuje na něj Obsidian vault. Maskot a pracovní název: **Holub** (poštovní holub — nosí poznámky). Žádné velké okno — celá appka je: ikona v liště, menu na pravé tlačítko, oznámení (toasty).

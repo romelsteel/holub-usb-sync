@@ -12,6 +12,7 @@ import ctypes
 import json
 import os
 import queue
+import random
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,12 @@ SLOZKA_ZALOHY = "Vault"                # složka s kopií vaultu na USB
 SOUBOR_SNIMKU = "holub-snapshot.json"  # paměť posledního syncu (obousměrný režim)
 TOLERANCE_CASU = 3                     # s — FAT32 ukládá časy jen po 2 s
 
+KOS_SLOZKA = ".holub-kos"              # smazané se nemažou, stěhují se sem
+KOS_DNY = 30                           # jak dlouho koš drží smazané soubory
+POJISTKA_MIN_SOUBORU = 5               # pojistka mazání: méně souborů neřeší…
+POJISTKA_PODIL = 0.2                   # …víc než 20 % poznámek už ano
+CESTA_PREHLED_PYW = os.path.join(SLOZKA, "otevri-prehled.pyw")
+
 VYCHOZI_CONFIG = {
     "vault": "",
     "rezim": "jednosmerny",            # "jednosmerny" | "obousmerny"
@@ -59,8 +66,10 @@ VYCHOZI_CONFIG = {
 CFG = dict(VYCHOZI_CONFIG)
 
 # Sdílený stav appky. "stav" je jedno z: ceka / ok / sync / chyba / hotovo
-S = {"stav": "ceka", "usb": None, "bezi": True, "chyba_text": "",
-     "vault_chybi": False, "casovac_pokus": 0.0, "casovac_den": ""}
+# "usb" je seznam všech připojených spárovaných disků (např. ["E:\\", "F:\\"])
+S = {"stav": "ceka", "usb": [], "bezi": True, "chyba_text": "",
+     "vault_chybi": False, "casovac_pokus": 0.0, "casovac_den": "",
+     "povolit_mazani": False, "mazani_ceka": False}
 IKONA = {"obj": None}          # pystray ikona (naplní se v main)
 ZAMEK_SYNCU = threading.Lock()  # sync nikdy nesmí běžet dvakrát naráz
 
@@ -136,6 +145,25 @@ MAPA_LET_2 = """
 .......DD.......
 """
 
+MAPA_KLOVNUTI = """
+................
+................
+....BB..........
+...BBBB.........
+..KBEBB.........
+...BBBB.........
+....GGBB........
+....BBBBBBBB....
+....BWWWWBBBDD..
+....BWWWWWBBBDD.
+.....BWWWWBBDD..
+......BBBBBB....
+.......L..L.....
+......LL..LL....
+................
+................
+"""
+
 MAPA_CHYBA = """
 ............RRR.
 ....BB.....RRXRR
@@ -192,6 +220,9 @@ IKONY = {
     "let2": vykresli_ikonu(MAPA_LET_2, PALETA),
     "chyba": vykresli_ikonu(MAPA_CHYBA, PALETA),
     "hotovo": vykresli_ikonu(MAPA_HOTOVO, PALETA),
+    # klidové drobnosti: mrknutí (oko splyne s tělem) a klovnutí
+    "mrk": vykresli_ikonu(MAPA_STOJICI, dict(PALETA, E=PALETA["B"])),
+    "klov": vykresli_ikonu(MAPA_KLOVNUTI, PALETA),
 }
 
 # ---------------------------------------------------------------------------
@@ -207,10 +238,42 @@ def loguj(text):
         pass
 
 
-def toast(titulek, text=""):
+def zajisti_prehled_pyw():
+    """Vyrobí skript, který z tlačítka na oznámení otevře okno Přehledu.
+
+    Kliknutí na tlačítko spustí tenhle skriptík: ten jen „zazvoní" na běžícího
+    Holuba přes pojmenovanou událost Windows (a když Holub neběží, spustí ho)."""
+    if not os.path.isfile(CESTA_PREHLED_PYW):
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.isfile(pythonw):
+            pythonw = sys.executable
+        skript = os.path.join(SLOZKA, "holub.py")
+        obsah = (
+            "import ctypes, subprocess\n"
+            "kernel32 = ctypes.windll.kernel32\n"
+            'udalost = kernel32.CreateEventW(None, False, False, "Holub-ukaz-prehled")\n'
+            "kernel32.SetEvent(udalost)\n"
+            'mutex = kernel32.OpenMutexW(0x100000, False, "Holub-USB-sync")\n'
+            "if not mutex:\n"
+            f'    subprocess.Popen([r"{pythonw}", r"{skript}"], cwd=r"{SLOZKA}")\n'
+            "else:\n"
+            "    kernel32.CloseHandle(mutex)\n"
+        )
+        try:
+            with open(CESTA_PREHLED_PYW, "w", encoding="utf-8") as soubor:
+                soubor.write(obsah)
+        except OSError:
+            loguj(traceback.format_exc())
+    return CESTA_PREHLED_PYW
+
+
+def toast(titulek, text="", prehled=False):
     try:
-        Notification(app_id="Holub", title=titulek, msg=text,
-                     icon=CESTA_TOAST_IKONY).show()
+        oznameni = Notification(app_id="Holub", title=titulek, msg=text,
+                                icon=CESTA_TOAST_IKONY)
+        if prehled:
+            oznameni.add_actions("Otevřít přehled", zajisti_prehled_pyw())
+        oznameni.show()
     except Exception:
         loguj("Toast selhal:\n" + traceback.format_exc())
 
@@ -308,18 +371,19 @@ def pripojene_disky():
     return [f"{chr(65 + i)}:\\" for i in range(26) if maska >> i & 1]
 
 
-def najdi_usb():
-    """Vrátí kořen prvního disku se značkou .holub-usb, jinak None."""
+def najdi_usb_vsechny():
+    """Vrátí kořeny všech připojených disků se značkou .holub-usb."""
     system = (os.environ.get("SystemDrive", "C:") + "\\").upper()
+    nalezene = []
     for disk in pripojene_disky():
         if disk.upper() == system:
             continue
         try:
             if os.path.isfile(os.path.join(disk, ZNACKA_USB)):
-                return disk
+                nalezene.append(disk)
         except OSError:
             pass
-    return None
+    return nalezene
 
 # ---------------------------------------------------------------------------
 # Synchronizace — jádro appky
@@ -331,6 +395,49 @@ def najdi_usb():
 # ---------------------------------------------------------------------------
 
 
+class MnohoMazani(Exception):
+    """Pojistka: synchronizace by smazala podezřele velkou část poznámek."""
+
+    def __init__(self, kde, kolik, celkem):
+        super().__init__(f"chce smazat {kolik} z {celkem} poznámek {kde}")
+        self.kde = kde
+        self.kolik = kolik
+        self.celkem = celkem
+
+
+def zkontroluj_pojistku(kolik, celkem, kde, povoleno):
+    if povoleno or kolik < POJISTKA_MIN_SOUBORU:
+        return
+    if kolik > celkem * POJISTKA_PODIL:
+        raise MnohoMazani(kde, kolik, celkem)
+
+
+def presun_do_kose(kos, koren, rel):
+    """Místo smazání se soubor přestěhuje do koše (podsložka podle data)."""
+    cil = os.path.join(kos, datetime.now().date().isoformat(), rel)
+    os.makedirs(os.path.dirname(cil), exist_ok=True)
+    try:
+        ctypes.windll.kernel32.SetFileAttributesW(kos, 2)  # skrytá složka
+    except Exception:
+        pass
+    if os.path.exists(cil):
+        os.remove(cil)
+    shutil.move(os.path.join(koren, rel), cil)
+
+
+def vycisti_kos(kos):
+    """Vysype z koše podsložky starší než KOS_DNY dní."""
+    if not os.path.isdir(kos):
+        return
+    for jmeno in os.listdir(kos):
+        try:
+            stari = (datetime.now() - datetime.fromisoformat(jmeno)).days
+        except ValueError:
+            continue  # cizí složka — nesahat
+        if stari > KOS_DNY:
+            shutil.rmtree(os.path.join(kos, jmeno), ignore_errors=True)
+
+
 def projdi(koren, ignorovat):
     """Vrátí {relativní cesta: (čas úpravy, velikost)} všech souborů ve složce."""
     soubory = {}
@@ -338,7 +445,7 @@ def projdi(koren, ignorovat):
         for jmeno in jmena:
             plna = os.path.join(cesta, jmeno)
             rel = os.path.relpath(plna, koren).replace("\\", "/")
-            if rel in ignorovat:
+            if rel in ignorovat or rel.startswith(KOS_SLOZKA + "/"):
                 continue
             try:
                 udaje = os.stat(plna)
@@ -369,31 +476,30 @@ def smaz_prazdne_slozky(koren):
             pass
 
 
-def sync_jednosmerny(vault, cil, ignorovat, naostro=True):
+def sync_jednosmerny(vault, cil, ignorovat, naostro=True, povolit_mazani=False):
     """Zrcadlo PC → USB. Na PC nesahá — jen čte.
 
-    S naostro=False jen spočítá, co by se stalo, a ničeho se nedotkne."""
-    if naostro:
-        os.makedirs(cil, exist_ok=True)
+    S naostro=False jen spočítá, co by se stalo, a ničeho se nedotkne.
+    „Smazání" na USB je přesun do koše .holub-kos (drží se KOS_DNY dní)."""
     na_pc = projdi(vault, ignorovat)
     na_usb = projdi(cil, ignorovat)
+    kopirovat = [rel for rel, udaje in na_pc.items()
+                 if rel not in na_usb or not stejne(udaje, na_usb[rel])]
+    smazat = [rel for rel in na_usb if rel not in na_pc]
 
-    zkopirovano = 0
-    for rel, udaje in na_pc.items():
-        if rel not in na_usb or not stejne(udaje, na_usb[rel]):
-            if naostro:
-                zkopiruj(vault, cil, rel)
-            zkopirovano += 1
+    if not naostro:
+        return len(kopirovat), len(smazat)
 
-    smazano = 0
-    for rel in na_usb:
-        if rel not in na_pc:
-            if naostro:
-                os.remove(os.path.join(cil, rel))
-            smazano += 1
-    if smazano and naostro:
+    zkontroluj_pojistku(len(smazat), len(na_usb), "na USB", povolit_mazani)
+    os.makedirs(cil, exist_ok=True)
+    for rel in kopirovat:
+        zkopiruj(vault, cil, rel)
+    kos = os.path.join(os.path.dirname(cil), KOS_SLOZKA)
+    for rel in smazat:
+        presun_do_kose(kos, cil, rel)
+    if smazat:
         smaz_prazdne_slozky(cil)
-    return zkopirovano, smazano
+    return len(kopirovat), len(smazat)
 
 
 def konfliktni_jmeno(rel, vault, cil):
@@ -409,12 +515,13 @@ def konfliktni_jmeno(rel, vault, cil):
         cislo += 1
 
 
-def sync_obousmerny(vault, cil, cesta_snimku, ignorovat, naostro=True):
+def sync_obousmerny(vault, cil, cesta_snimku, ignorovat, naostro=True,
+                    povolit_mazani=False):
     """PC ⇄ USB. Snímek posledního syncu rozlišuje „smazáno" od „nové".
 
-    S naostro=False jen spočítá, co by se stalo, a ničeho se nedotkne."""
-    if naostro:
-        os.makedirs(cil, exist_ok=True)
+    Nejdřív se sestaví plán akcí, pak se teprve provádí — díky tomu umí
+    pojistka zastavit podezřele velké mazání dřív, než se čehokoli dotkne.
+    S naostro=False vrátí jen počty z plánu. „Smazání" = přesun do koše."""
     na_pc = projdi(vault, ignorovat)
     na_usb = projdi(cil, ignorovat)
 
@@ -426,8 +533,8 @@ def sync_obousmerny(vault, cil, cesta_snimku, ignorovat, naostro=True):
         except (OSError, ValueError):
             snimek = {}  # poškozený snímek → nic se nemaže, jen se slévá obsah
 
-    vysledek = {"na_usb": 0, "na_pc": 0, "smazano_usb": 0, "smazano_pc": 0,
-                "konflikty": 0}
+    plan = {"na_usb": [], "na_pc": [], "smazat_pc": [], "smazat_usb": [],
+            "konflikty": []}
 
     for rel in sorted(set(na_pc) | set(na_usb)):
         je_pc, je_usb = rel in na_pc, rel in na_usb
@@ -438,58 +545,62 @@ def sync_obousmerny(vault, cil, cesta_snimku, ignorovat, naostro=True):
             if stejne(na_pc[rel], na_usb[rel]):
                 continue
             if zmena_pc and zmena_usb:
-                # Konflikt: verze z PC si nechá původní jméno, verze z USB
-                # se uloží vedle ní — na obou stranách, nic se neztratí.
-                if naostro:
-                    kopie = konfliktni_jmeno(rel, vault, cil)
-                    shutil.copy2(os.path.join(cil, rel), os.path.join(cil, kopie))
-                    shutil.copy2(os.path.join(cil, rel), os.path.join(vault, kopie))
-                    zkopiruj(vault, cil, rel)
-                vysledek["konflikty"] += 1
+                plan["konflikty"].append(rel)
             elif zmena_pc:
-                if naostro:
-                    zkopiruj(vault, cil, rel)
-                vysledek["na_usb"] += 1
+                plan["na_usb"].append(rel)
             elif zmena_usb:
-                if naostro:
-                    zkopiruj(cil, vault, rel)
-                vysledek["na_pc"] += 1
+                plan["na_pc"].append(rel)
+            elif na_pc[rel][0] >= na_usb[rel][0]:
+                # hraniční případ (snímek sedí na obě strany, přesto se liší):
+                # vyhrává novější verze
+                plan["na_usb"].append(rel)
             else:
-                # Hraniční případ (snímek sedí na obě strany, přesto se liší):
-                # vyhrává novější verze.
-                if na_pc[rel][0] >= na_usb[rel][0]:
-                    if naostro:
-                        zkopiruj(vault, cil, rel)
-                    vysledek["na_usb"] += 1
-                else:
-                    if naostro:
-                        zkopiruj(cil, vault, rel)
-                    vysledek["na_pc"] += 1
+                plan["na_pc"].append(rel)
         elif je_pc:
             if rel in snimek and not zmena_pc:
-                if naostro:
-                    os.remove(os.path.join(vault, rel))   # smazáno na USB
-                vysledek["smazano_pc"] += 1
+                plan["smazat_pc"].append(rel)     # smazáno na USB
             else:
-                if naostro:
-                    zkopiruj(vault, cil, rel)             # nové na PC (úprava poráží smazání)
-                vysledek["na_usb"] += 1
+                plan["na_usb"].append(rel)        # nové na PC (úprava poráží smazání)
         else:
             if rel in snimek and not zmena_usb:
-                if naostro:
-                    os.remove(os.path.join(cil, rel))     # smazáno na PC
-                vysledek["smazano_usb"] += 1
+                plan["smazat_usb"].append(rel)    # smazáno na PC
             else:
-                if naostro:
-                    zkopiruj(cil, vault, rel)             # nové na USB
-                vysledek["na_pc"] += 1
+                plan["na_pc"].append(rel)         # nové na USB
 
+    vysledek = {"na_usb": len(plan["na_usb"]), "na_pc": len(plan["na_pc"]),
+                "smazano_usb": len(plan["smazat_usb"]),
+                "smazano_pc": len(plan["smazat_pc"]),
+                "konflikty": len(plan["konflikty"])}
     if not naostro:
         return vysledek
 
-    if vysledek["smazano_usb"]:
+    zkontroluj_pojistku(len(plan["smazat_usb"]), len(na_usb), "na USB",
+                        povolit_mazani)
+    zkontroluj_pojistku(len(plan["smazat_pc"]), len(na_pc), "na PC",
+                        povolit_mazani)
+
+    os.makedirs(cil, exist_ok=True)
+    for rel in plan["na_usb"]:
+        zkopiruj(vault, cil, rel)
+    for rel in plan["na_pc"]:
+        zkopiruj(cil, vault, rel)
+    for rel in plan["konflikty"]:
+        # Konflikt: verze z PC si nechá původní jméno, verze z USB se uloží
+        # vedle ní — na obou stranách, nic se neztratí.
+        kopie = konfliktni_jmeno(rel, vault, cil)
+        shutil.copy2(os.path.join(cil, rel), os.path.join(cil, kopie))
+        shutil.copy2(os.path.join(cil, rel), os.path.join(vault, kopie))
+        zkopiruj(vault, cil, rel)
+    kos_usb = os.path.join(os.path.dirname(cil), KOS_SLOZKA)
+    kos_pc = os.path.join(vault, KOS_SLOZKA)
+    for rel in plan["smazat_usb"]:
+        presun_do_kose(kos_usb, cil, rel)
+    for rel in plan["smazat_pc"]:
+        presun_do_kose(kos_pc, vault, rel)
+
+    if plan["smazat_usb"]:
         smaz_prazdne_slozky(cil)
-    if vysledek["smazano_pc"]:
+    if plan["smazat_pc"]:
         smaz_prazdne_slozky(vault)
 
     novy_snimek = projdi(vault, ignorovat)
@@ -522,10 +633,11 @@ def stavovy_text(_item=None):
         return "synchronizuji…"
     if S["stav"] == "chyba":
         return S["chyba_text"] or "chyba synchronizace"
-    if S["usb"] is None:
+    if not S["usb"]:
         return "čekám na USB disk"
+    disky = f" · {len(S['usb'])} disky" if len(S["usb"]) > 1 else ""
     if CFG.get("posledni_sync"):
-        return "vše synchronizováno · " + hezky_cas(CFG["posledni_sync"])
+        return "vše synchronizováno · " + hezky_cas(CFG["posledni_sync"]) + disky
     return "USB připojené · zatím nesynchronizováno"
 
 
@@ -572,10 +684,11 @@ def zprava_obousmerna(vysledek, trvani=None):
 
 
 def synchronizuj():
-    """Jeden běh synchronizace. Volat vždy v samostatném vlákně."""
+    """Jeden běh synchronizace všech připojených spárovaných disků.
+    Volat vždy v samostatném vlákně."""
     if not ZAMEK_SYNCU.acquire(blocking=False):
         return  # už běží
-    usb = None
+    disk_prave = None
     try:
         vault = CFG.get("vault")
         if not vault or not os.path.isdir(vault):
@@ -583,44 +696,71 @@ def synchronizuj():
             toast("Nenacházím složku vaultu",
                   "V menu zvol „Zvolit složku vaultu…“ a vyber ji znovu.")
             return
-        usb = S["usb"] or najdi_usb()
-        if usb is None:
+        disky = list(S["usb"]) or najdi_usb_vsechny()
+        if not disky:
             toast("USB disk není připojený",
                   "Zasuň spárovaný USB disk, synchronizace se spustí sama.")
             return
+        povolit_mazani = S["povolit_mazani"]
+        S["povolit_mazani"] = False  # potvrzení platí jen pro jeden běh
 
         nastav_stav("sync")
         zacatek = time.time()
-        cil = os.path.join(usb, SLOZKA_ZALOHY)
         ignorovat = set(CFG.get("ignorovat", []))
+        casti = []
+        konflikty_celkem = 0
 
-        if CFG.get("rezim") == "obousmerny":
-            vysledek = sync_obousmerny(
-                vault, cil, os.path.join(usb, SOUBOR_SNIMKU), ignorovat)
-            zprava = zprava_obousmerna(vysledek, time.time() - zacatek)
-            if vysledek["konflikty"]:
-                toast("Pozor, konflikt poznámek",
-                      "Stejná poznámka byla změněná na PC i na USB. Obě verze "
-                      "jsou uložené — hledej soubory „(konflikt z USB)“.")
-        else:
-            zkopirovano, smazano = sync_jednosmerny(vault, cil, ignorovat)
-            zprava = zprava_jednosmerna(zkopirovano, smazano,
-                                        time.time() - zacatek)
+        for disk in disky:
+            disk_prave = disk
+            cil = os.path.join(disk, SLOZKA_ZALOHY)
+            if CFG.get("rezim") == "obousmerny":
+                vysledek = sync_obousmerny(
+                    vault, cil, os.path.join(disk, SOUBOR_SNIMKU), ignorovat,
+                    povolit_mazani=povolit_mazani)
+                cast = zprava_obousmerna(vysledek)
+                konflikty_celkem += vysledek["konflikty"]
+            else:
+                zkopirovano, smazano = sync_jednosmerny(
+                    vault, cil, ignorovat, povolit_mazani=povolit_mazani)
+                cast = zprava_jednosmerna(zkopirovano, smazano)
+            casti.append(cast if len(disky) == 1 else f"{disk[0]}: {cast}")
+            vycisti_kos(os.path.join(disk, KOS_SLOZKA))
+        vycisti_kos(os.path.join(vault, KOS_SLOZKA))
+
+        zprava = " | ".join(casti) + " · " + formatuj_cas(time.time() - zacatek)
+        if konflikty_celkem:
+            toast("Pozor, konflikt poznámek",
+                  "Stejná poznámka byla změněná na PC i na USB. Obě verze "
+                  "jsou uložené — hledej soubory „(konflikt z USB)“.",
+                  prehled=True)
 
         CFG["posledni_sync"] = datetime.now().isoformat(timespec="seconds")
         uloz_config()
         zapis_historii(zprava)
         nastav_stav("hotovo")
-        toast("Synchronizace dokončena", zprava)
+        toast("Synchronizace dokončena", zprava, prehled=True)
         time.sleep(1.5)  # zelená fajfka chvíli svítí…
         if S["stav"] == "hotovo":
             nastav_stav("ok")  # …a pak zpět na „vše v pořádku"
+    except MnohoMazani as pojistka:
+        # bezpečnostní brzda — nic se nesmazalo, čeká se na rozhodnutí
+        S["mazani_ceka"] = True
+        POTVRZENI["info"] = {"kde": pojistka.kde, "kolik": pojistka.kolik,
+                             "celkem": pojistka.celkem, "disk": disk_prave}
+        kratce = f"pozastaveno — chtělo se smazat {pojistka.kolik} poznámek"
+        zapis_historii(kratce, chyba=True)
+        nastav_stav("chyba", kratce)
+        toast("Synchronizace pozastavena",
+              f"Chystala se smazat {pojistka.kolik} z {pojistka.celkem} "
+              f"poznámek {pojistka.kde} — to je podezřele moc, tak jsem se "
+              "raději zastavil.", prehled=True)
+        akce_potvrzeni_mazani()
     except OSError as chyba:
         loguj(traceback.format_exc())
         if getattr(chyba, "errno", None) == 28:
             text = "Na USB disku není dost místa. Uvolni místo a zkus to znovu."
             kratce = "USB disk je plný"
-        elif usb and not os.path.isdir(usb):
+        elif disk_prave and not os.path.isdir(disk_prave):
             text = ("USB disk byl odpojen uprostřed synchronizace. Zasuň ho "
                     "znovu — synchronizace se spustí sama a dokončí se.")
             kratce = "USB odpojeno při synchronizaci"
@@ -629,7 +769,7 @@ def synchronizuj():
             kratce = "chyba při synchronizaci"
         zapis_historii(kratce, chyba=True)
         nastav_stav("chyba", kratce)
-        toast("Synchronizace selhala", text)
+        toast("Synchronizace selhala", text, prehled=True)
     except Exception:
         loguj(traceback.format_exc())
         zapis_historii("neočekávaná chyba — viz holub.log", chyba=True)
@@ -656,10 +796,12 @@ def nastav_rezim(rezim):
 
 
 def akce_otevrit_zalohu(_ikona=None, _polozka=None):
-    usb = S["usb"] or najdi_usb()
-    if usb and os.path.isdir(os.path.join(usb, SLOZKA_ZALOHY)):
-        os.startfile(os.path.join(usb, SLOZKA_ZALOHY))
-    elif usb:
+    disky = list(S["usb"]) or najdi_usb_vsechny()
+    for disk in disky:
+        if os.path.isdir(os.path.join(disk, SLOZKA_ZALOHY)):
+            os.startfile(os.path.join(disk, SLOZKA_ZALOHY))
+            return
+    if disky:
         toast("Záloha zatím neexistuje", "Nejdřív spusť synchronizaci.")
     else:
         toast("USB disk není připojený", "Zasuň spárovaný USB disk.")
@@ -711,7 +853,8 @@ def _parovat():
     toast("USB disk spárován",
           f"Disk {koren} je teď můj. Spouštím první synchronizaci.")
     # hlídač si disk převezme; sync spustíme rovnou, ať se nečeká
-    S["usb"] = koren
+    if koren not in S["usb"]:
+        S["usb"] = S["usb"] + [koren]
     nastav_stav("ok")
     akce_sync()
 
@@ -774,14 +917,14 @@ def hlidac():
             S["vault_chybi"] = False
             nastav_stav("ok" if S["usb"] else "ceka")
 
-        disk = najdi_usb()
-        if disk and S["usb"] is None:
-            S["usb"] = disk
-            if not S["vault_chybi"]:
-                nastav_stav("ok")
-                akce_sync()  # sync při zasunutí
-        elif disk is None and S["usb"] is not None:
-            S["usb"] = None
+        disky = najdi_usb_vsechny()
+        nove = [disk for disk in disky if disk not in S["usb"]]
+        byly = bool(S["usb"])
+        S["usb"] = disky
+        if nove and not S["vault_chybi"]:
+            nastav_stav("ok")
+            akce_sync()  # sync při zasunutí (obslouží všechny připojené)
+        elif not disky and byly:
             if S["stav"] not in ("sync", "chyba"):
                 nastav_stav("ceka")
         time.sleep(max(2, int(CFG.get("interval_kontroly_s", 5))))
@@ -820,7 +963,8 @@ def casovac_smycka():
     while S["bezi"]:
         time.sleep(20)
         rezim = CFG.get("casovac", "vypnuto")
-        muze = S["usb"] and not S["vault_chybi"] and S["stav"] != "sync"
+        muze = (S["usb"] and not S["vault_chybi"] and S["stav"] != "sync"
+                and not S["mazani_ceka"])
         if rezim == "interval":
             try:
                 minuty = max(1, int(CFG.get("casovac_minuty", 30)))
@@ -846,16 +990,46 @@ def casovac_smycka():
 
 
 def animace():
-    """Za letu holub mává křídly — dva snímky, ~0,6 s na cyklus."""
+    """Za letu holub mává křídly; v klidu si občas žije po svém —
+    mrkne, nebo klovne po něčem na zemi."""
     horni = False
+    dalsi_kousek = time.time() + random.uniform(5, 12)
     while S["bezi"]:
-        if S["stav"] == "sync" and IKONA["obj"]:
+        ikona = IKONA["obj"]
+        if S["stav"] == "sync" and ikona:
             horni = not horni
             try:
-                IKONA["obj"].icon = IKONY["let1" if horni else "let2"]
+                ikona.icon = IKONY["let1" if horni else "let2"]
             except Exception:
                 pass
+        elif S["stav"] == "ok" and ikona and time.time() >= dalsi_kousek:
+            try:
+                if random.random() < 0.5:
+                    ikona.icon = IKONY["mrk"]
+                    time.sleep(0.15)
+                else:
+                    for snimek in ("klov", "ok", "klov"):
+                        if S["stav"] != "ok":
+                            break
+                        ikona.icon = IKONY[snimek]
+                        time.sleep(0.22)
+                if S["stav"] == "ok":
+                    ikona.icon = IKONY["ok"]
+            except Exception:
+                pass
+            dalsi_kousek = time.time() + random.uniform(6, 15)
         time.sleep(0.3)
+
+
+def cekac_na_prehled():
+    """Čeká na „zazvonění" od tlačítka na oznámení a otevře okno Přehledu."""
+    udalost = ctypes.windll.kernel32.CreateEventW(None, False, False,
+                                                  "Holub-ukaz-prehled")
+    if not udalost:
+        return
+    while S["bezi"]:
+        if ctypes.windll.kernel32.WaitForSingleObject(udalost, 1000) == 0:
+            akce_okno()
 
 # ---------------------------------------------------------------------------
 # Okno „Přehled" — historie, konflikty, kontrola změn. Tmavý vzhled.
@@ -869,11 +1043,13 @@ BARVY = {
     "pozadi": "#1f2127", "karta": "#282b33", "text": "#e8eaf0",
     "tlumena": "#9aa1ad", "akcent": "#3fae7a", "cervena": "#e06c6c",
     "tlacitko": "#2f333c", "tlacitko_aktivni": "#3a3f4a", "vyber": "#3a3f4a",
+    "nebezpeci": "#8c3a3a",
 }
 
 OKNO = {"fronta": None}
 NAHLED = {"text": ""}
 KONFLIKTY = {"seznam": [], "verze": 0, "hledam": False}
+POTVRZENI = {"info": None}  # čekající dotaz pojistky hromadného mazání
 
 
 def zajisti_vlakno_okna():
@@ -892,6 +1068,12 @@ def akce_casovac_dialog(druh):
     """Otevře dialog pro vlastní interval ("interval") nebo denní čas ("denne")."""
     zajisti_vlakno_okna()
     OKNO["fronta"].put("dialog-" + druh)
+
+
+def akce_potvrzeni_mazani():
+    """Otevře dotaz pojistky: opravdu smazat tolik poznámek najednou?"""
+    zajisti_vlakno_okna()
+    OKNO["fronta"].put("dialog-mazani")
 
 
 def najdi_konflikty():
@@ -923,30 +1105,33 @@ def zkontroluj_zmeny():
         return
     try:
         vault = CFG.get("vault")
-        usb = S["usb"] or najdi_usb()
+        disky = list(S["usb"]) or najdi_usb_vsechny()
         if not vault or not os.path.isdir(vault):
             NAHLED["text"] = "Nenacházím složku vaultu."
             return
-        if usb is None:
+        if not disky:
             NAHLED["text"] = "USB disk není připojený."
             return
-        cil = os.path.join(usb, SLOZKA_ZALOHY)
         ignorovat = set(CFG.get("ignorovat", []))
-        if CFG.get("rezim") == "obousmerny":
-            vysledek = sync_obousmerny(vault, cil,
-                                       os.path.join(usb, SOUBOR_SNIMKU),
-                                       ignorovat, naostro=False)
-            if all(pocet == 0 for pocet in vysledek.values()):
-                NAHLED["text"] = "Vše je synchronizované — není co přenášet."
+        casti = []
+        for disk in disky:
+            cil = os.path.join(disk, SLOZKA_ZALOHY)
+            if CFG.get("rezim") == "obousmerny":
+                vysledek = sync_obousmerny(vault, cil,
+                                           os.path.join(disk, SOUBOR_SNIMKU),
+                                           ignorovat, naostro=False)
+                nic = all(pocet == 0 for pocet in vysledek.values())
+                cast = ("vše je synchronizované" if nic
+                        else "čeká: " + zprava_obousmerna(vysledek))
             else:
-                NAHLED["text"] = "Čeká: " + zprava_obousmerna(vysledek)
-        else:
-            zkopirovano, smazano = sync_jednosmerny(vault, cil, ignorovat,
-                                                    naostro=False)
-            if not zkopirovano and not smazano:
-                NAHLED["text"] = "Vše je synchronizované — není co přenášet."
-            else:
-                NAHLED["text"] = "Čeká: " + zprava_jednosmerna(zkopirovano, smazano)
+                zkopirovano, smazano = sync_jednosmerny(vault, cil, ignorovat,
+                                                        naostro=False)
+                cast = ("vše je synchronizované"
+                        if not zkopirovano and not smazano
+                        else "čeká: " + zprava_jednosmerna(zkopirovano, smazano))
+            casti.append(cast if len(disky) == 1 else f"{disk[0]}: {cast}")
+        text = " | ".join(casti)
+        NAHLED["text"] = text[0].upper() + text[1:]
     except Exception:
         loguj(traceback.format_exc())
         NAHLED["text"] = "Kontrola se nepovedla — podrobnosti v holub.log."
@@ -987,11 +1172,12 @@ def vlakno_okna():
         except Exception:
             pass
 
-    def tlacitko(rodic, text, prikaz):
+    def tlacitko(rodic, text, prikaz, barva=None):
         return tk.Button(
             rodic, text=text, command=prikaz, relief="flat", bd=0,
-            bg=B["tlacitko"], fg=B["text"],
-            activebackground=B["tlacitko_aktivni"], activeforeground=B["text"],
+            bg=barva or B["tlacitko"], fg=B["text"],
+            activebackground=barva or B["tlacitko_aktivni"],
+            activeforeground=B["text"],
             font=("Segoe UI", 10), padx=12, pady=6, cursor="hand2")
 
     def nadpis(rodic, text):
@@ -1217,6 +1403,48 @@ def vlakno_okna():
         dialog.lift()
         pole.focus_force()
 
+    def zeptej_mazani():
+        """Dotaz pojistky: opravdu smazat tolik poznámek najednou?"""
+        info = POTVRZENI["info"]
+        if info is None or prvky.get("dialog_mazani"):
+            return
+        dialog = tk.Toplevel(koren)
+        prvky["dialog_mazani"] = dialog
+        dialog.title("Holub — opravdu smazat?")
+        dialog.configure(bg=B["pozadi"])
+        dialog.resizable(False, False)
+        dialog.geometry("+320+260")
+        ztmav_titulek(dialog)
+        zprava = (f"Synchronizace se chystala smazat {info['kolik']} "
+                  f"z {info['celkem']} poznámek {info['kde']} (disk {info['disk']}).\n\n"
+                  "To je hodně najednou, tak jsem se raději zastavil.\n"
+                  "Nepřesunula se ti složka vaultu? Nezmizely poznámky omylem?\n\n"
+                  f"Smazané neskončí v nenávratnu — jdou do koše {KOS_SLOZKA}\n"
+                  f"a tam se drží {KOS_DNY} dní.")
+        tk.Label(dialog, text=zprava, bg=B["pozadi"], fg=B["text"],
+                 font=("Segoe UI", 10), justify="left").pack(
+            padx=18, pady=(16, 10), anchor="w")
+
+        def zavri(smazat):
+            S["mazani_ceka"] = False
+            POTVRZENI["info"] = None
+            prvky.pop("dialog_mazani", None)
+            dialog.destroy()
+            if smazat:
+                S["povolit_mazani"] = True  # platí pro následující jeden běh
+                akce_sync()
+            else:
+                nastav_stav("ok" if S["usb"] else "ceka")
+
+        rada = tk.Frame(dialog, bg=B["pozadi"])
+        rada.pack(fill="x", padx=18, pady=(4, 16))
+        tlacitko(rada, "Smazat a synchronizovat", lambda: zavri(True),
+                 barva=B["nebezpeci"]).pack(side="right", padx=(8, 0))
+        tlacitko(rada, "Zrušit", lambda: zavri(False)).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", lambda: zavri(False))
+        dialog.attributes("-topmost", True)
+        dialog.lift()
+
     def zpracuj_frontu():
         try:
             while True:
@@ -1239,6 +1467,8 @@ def vlakno_okna():
                     zeptej("interval")
                 elif prikaz == "dialog-denne":
                     zeptej("denne")
+                elif prikaz == "dialog-mazani":
+                    zeptej_mazani()
         except queue.Empty:
             pass
         koren.after(200, zpracuj_frontu)
@@ -1328,6 +1558,7 @@ def po_startu(ikona):
     threading.Thread(target=hlidac, daemon=True).start()
     threading.Thread(target=animace, daemon=True).start()
     threading.Thread(target=casovac_smycka, daemon=True).start()
+    threading.Thread(target=cekac_na_prehled, daemon=True).start()
     if not CFG.get("vault"):
         toast("Ahoj, tady Holub 🕊️",
               "Budu ti zálohovat poznámky na USB. Nejdřív mi ukaž složku vaultu.")

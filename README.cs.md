@@ -37,6 +37,8 @@ Při synchronizaci letí s poznámkou v zobáku:
 
 ![Animace letu](img/holub-let.gif)
 
+V klidu si občas mrkne nebo klovne po něčem na zemi. Zásadní funkce.
+
 Dvojklik na ikonu otevře okno Přehledu — historie synchronizací, nevyřešené
 konflikty a kontrola nanečisto, co by příští synchronizace udělala:
 
@@ -46,6 +48,12 @@ konflikty a kontrola nanečisto, co by příští synchronizace udělala:
 
 - **Pozná svůj USB disk** podle skrytého souboru `.holub-usb` — funguje, i když
   disk dostane jiné písmeno (E:, F:…). Na cizí disk nikdy nezapisuje.
+  Spárovat si můžeš klidně víc flashek a střídat je — synchronizuje se každý
+  připojený spárovaný disk.
+- **Záchranná síť při mazání** — nic se nemaže natvrdo: odstraněné soubory
+  putují do skryté složky-koše `.holub-kos` a drží se tam 30 dní. A když by
+  synchronizace chtěla smazat podezřele velkou část zálohy (víc než 20 %
+  poznámek), Holub se zastaví a nejdřív se zeptá.
 - **Synchronizuje sám při zasunutí USB**, nebo ručně z menu.
 - **Okno Přehledu** (dvojklik na ikonu) — historie synchronizací, seznam
   nevyřešených konfliktů s tlačítky otevřít/smazat a „Zkontrolovat změny",
@@ -62,7 +70,8 @@ konflikty a kontrola nanečisto, co by příští synchronizace udělala:
   nebo jednou denně v čas, který si zvolíš. Hodí se, když USB zůstává
   v počítači trvale; bez připojeného disku časovač jen tiše čeká.
 - **Windows oznámení** po dokončení („12 poznámek zkopírováno na USB · 3 s")
-  i při chybě, s vysvětlením co se stalo.
+  i při chybě, s vysvětlením co se stalo — a s tlačítkem, které rovnou otevře
+  okno Přehledu.
 - **Spouštění se systémem Windows** — zapíná se jedním kliknutím v menu.
 - Ignoruje `workspace.json` Obsidianu (mění se každým kliknutím a jen by
   vyráběl zbytečné konflikty).
@@ -95,6 +104,7 @@ Záloha na USB vypadá takhle:
 ```
 E:\
   .holub-usb            párovací značka (skrytý soubor)
+  .holub-kos\           koš — smazané poznámky, drží se 30 dní
   holub-snapshot.json   paměť posledního syncu (jen obousměrný režim)
   Vault\                kopie vaultu
 ```
@@ -127,6 +137,9 @@ Holub nosí poznámky, neztrácí je. Proto platí bez výjimky:
    **úprava vyhrává** — poznámka se vrátí, nic se neztratí.
 4. Bez párovací značky se **nesyncuje** — na cizí USB se nikdy nesahá.
 5. Synchronizace nikdy neběží dvakrát naráz.
+6. Mazání není nikdy okamžité a konečné: soubory jdou na 30 dní do koše
+   `.holub-kos`, a synchronizace, která by smazala přes 20 % poznámek
+   najednou, se zastaví a nejdřív se tě zeptá.
 
 Kontrola „je USB připojené?" běží každých ~5 sekund, ale je to jen dotaz do
 Windows na seznam disků — nic se nečte ani nekopíruje. A před kopírováním se

@@ -5,4 +5,5 @@ config.json
 holub.log
 holub-ikona.png
 holub-historie.json
+otevri-prehled.pyw
 __pycache__/

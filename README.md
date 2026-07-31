@@ -40,6 +40,9 @@ While syncing, it flies with a note in its beak:
 
 ![Flight animation](img/holub-let.gif)
 
+While idle, it occasionally blinks or pecks at something on the ground.
+Crucial functionality.
+
 Double-clicking the icon opens the overview window — sync history, unresolved
 conflicts and a dry-run check of what the next sync would do:
 
@@ -49,7 +52,12 @@ conflicts and a dry-run check of what the next sync would do:
 
 - **Recognizes its USB drive** by a hidden `.holub-usb` marker file — works
   even when the drive gets a different letter (E:, F:…). It never writes to
-  an unknown drive.
+  an unknown drive. Pair as many drives as you like and rotate them — every
+  connected paired drive gets synced.
+- **Deletion safety net** — nothing is ever deleted outright: removed files
+  go to a hidden `.holub-kos` recycle folder and are kept for 30 days. And if
+  a sync is about to wipe out a suspiciously large part of the backup (more
+  than 20 % of notes), Holub stops and asks first.
 - **Syncs by itself when you plug the USB in**, or manually from the menu.
 - **Overview window** (double-click the tray icon) — history of past syncs,
   a list of unresolved conflicts with one-click open/delete, and a "check
@@ -67,7 +75,8 @@ conflicts and a dry-run check of what the next sync would do:
   once a day at a time you pick. Handy when the USB drive stays plugged in;
   without the drive connected the timer just waits quietly.
 - **Windows notifications** when a sync finishes ("12 notes copied to USB ·
-  3 s") or fails, with an explanation of what happened.
+  3 s") or fails, with an explanation of what happened — and a button that
+  jumps straight to the overview window.
 - **Start with Windows** — toggled with one click in the menu.
 - Ignores Obsidian's `workspace.json` (it changes with every click and would
   only produce pointless conflicts).
@@ -102,6 +111,7 @@ The backup on the USB drive looks like this:
 ```
 E:\
   .holub-usb            pairing marker (hidden file)
+  .holub-kos\           recycle folder — deleted notes, kept for 30 days
   holub-snapshot.json   memory of the last sync (two-way mode only)
   Vault\                copy of the vault
 ```
@@ -136,6 +146,9 @@ exception:
    **the edit wins** — the note comes back, nothing is lost.
 4. No pairing marker, **no sync** — foreign USB drives are never touched.
 5. A sync never runs twice at the same time.
+6. Deleting is never instant and final: files go to the `.holub-kos` recycle
+   folder for 30 days, and a sync that would delete more than 20 % of notes
+   at once stops and asks you first.
 
 The "is the USB plugged in?" check runs every ~5 seconds, but it is just a
 query to Windows for the list of drives — nothing is read or copied. Files

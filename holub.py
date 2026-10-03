@@ -1566,6 +1566,10 @@ def po_startu(ikona):
 
 
 def main():
+    try:  # vlastní identita na hlavním panelu — jinak si lišta půjčí ikonu Pythonu
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Holub")
+    except Exception:
+        pass
     # jen jedna instance naráz
     ctypes.windll.kernel32.CreateMutexW(None, False, "Holub-USB-sync")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS

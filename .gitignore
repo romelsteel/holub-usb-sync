@@ -7,3 +7,10 @@ holub-ikona.png
 holub-historie.json
 otevri-prehled.pyw
 __pycache__/
+
+# build
+build/
+dist/
+dist-installer/
+*.spec
+installer/holub.ico

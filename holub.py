@@ -29,14 +29,19 @@ from winotify import Notification
 # Cesty a konstanty
 # ---------------------------------------------------------------------------
 
-SLOZKA = os.path.dirname(os.path.abspath(__file__))
-CESTA_CONFIG = os.path.join(SLOZKA, "config.json")
+ZABALENO = getattr(sys, "frozen", False)  # běží jako holub.exe (instalátor)?
+SLOZKA = os.path.dirname(sys.executable if ZABALENO else os.path.abspath(__file__))
+# data appky: ze zdrojáku vedle skriptu, z instalace v %APPDATA%\Holub
+SLOZKA_DAT = (os.path.join(os.environ.get("APPDATA", SLOZKA), "Holub")
+              if ZABALENO else SLOZKA)
+os.makedirs(SLOZKA_DAT, exist_ok=True)
+CESTA_CONFIG = os.path.join(SLOZKA_DAT, "config.json")
 if "--config" in sys.argv:  # jiný config pro testování na cvičném vaultu
     CESTA_CONFIG = sys.argv[sys.argv.index("--config") + 1]
 
-CESTA_LOG = os.path.join(SLOZKA, "holub.log")
-CESTA_TOAST_IKONY = os.path.join(SLOZKA, "holub-ikona.png")
-CESTA_HISTORIE = os.path.join(SLOZKA, "holub-historie.json")
+CESTA_LOG = os.path.join(SLOZKA_DAT, "holub.log")
+CESTA_TOAST_IKONY = os.path.join(SLOZKA_DAT, "holub-ikona.png")
+CESTA_HISTORIE = os.path.join(SLOZKA_DAT, "holub-historie.json")
 CESTA_AUTOSTART = os.path.join(
     os.environ.get("APPDATA", ""), "Microsoft", "Windows",
     "Start Menu", "Programs", "Startup", "Holub.pyw")
@@ -50,7 +55,9 @@ KOS_SLOZKA = ".holub-kos"              # smazané se nemažou, stěhují se sem
 KOS_DNY = 30                           # jak dlouho koš drží smazané soubory
 POJISTKA_MIN_SOUBORU = 5               # pojistka mazání: méně souborů neřeší…
 POJISTKA_PODIL = 0.2                   # …víc než 20 % poznámek už ano
-CESTA_PREHLED_PYW = os.path.join(SLOZKA, "otevri-prehled.pyw")
+CESTA_PREHLED_PYW = os.path.join(
+    SLOZKA_DAT, "otevri-prehled.vbs" if ZABALENO else "otevri-prehled.pyw")
+AUTOSTART_KLIC = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 VYCHOZI_CONFIG = {
     "vault": "",
@@ -243,7 +250,14 @@ def zajisti_prehled_pyw():
 
     Kliknutí na tlačítko spustí tenhle skriptík: ten jen „zazvoní" na běžícího
     Holuba přes pojmenovanou událost Windows (a když Holub neběží, spustí ho)."""
-    if not os.path.isfile(CESTA_PREHLED_PYW):
+    if ZABALENO:  # holub.exe --ukaz-prehled; .vbs ho spustí bez černého okna
+        try:
+            with open(CESTA_PREHLED_PYW, "w", encoding="utf-8") as soubor:
+                soubor.write('CreateObject("WScript.Shell").Run """%s"" --ukaz-prehled", 0, False\r\n'
+                             % sys.executable)
+        except OSError:
+            loguj(traceback.format_exc())
+    elif not os.path.isfile(CESTA_PREHLED_PYW):
         pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
         if not os.path.isfile(pythonw):
             pythonw = sys.executable
@@ -347,19 +361,33 @@ def hezky_cas(iso):
 def dialog_slozka(titulek):
     """Windows dialog pro výběr složky. Běží v pomocném procesu, aby se
     tkinter nepral s vlákny pystray."""
-    kod = (
-        "import tkinter as tk\n"
-        "from tkinter import filedialog\n"
-        "okno = tk.Tk(); okno.withdraw(); okno.attributes('-topmost', True)\n"
-        f"print(filedialog.askdirectory(title={titulek!r}) or '')\n"
-    )
-    prostredi = dict(os.environ, PYTHONIOENCODING="utf-8")
-    vysledek = subprocess.run(
-        [sys.executable, "-c", kod], capture_output=True, text=True,
-        encoding="utf-8", env=prostredi,
-        creationflags=subprocess.CREATE_NO_WINDOW)
-    cesta = (vysledek.stdout or "").strip()
+    vystup = os.path.join(SLOZKA_DAT, "dialog-vysledek.txt")
+    try:
+        os.remove(vystup)
+    except OSError:
+        pass
+    prikaz = ([sys.executable] if ZABALENO
+              else [sys.executable, os.path.abspath(__file__)])
+    subprocess.run(prikaz + ["--dialog-slozka", titulek, vystup],
+                   creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        with open(vystup, encoding="utf-8") as soubor:
+            cesta = soubor.read().strip()
+    except OSError:
+        cesta = ""
     return os.path.normpath(cesta) if cesta else None
+
+
+def dialog_slozka_proces(titulek, vystup):
+    """Pomocný proces: ukáže dialog a výsledek zapíše do souboru."""
+    import tkinter as tk
+    from tkinter import filedialog
+    okno = tk.Tk()
+    okno.withdraw()
+    okno.attributes("-topmost", True)
+    cesta = filedialog.askdirectory(title=titulek) or ""
+    with open(vystup, "w", encoding="utf-8") as soubor:
+        soubor.write(cesta)
 
 # ---------------------------------------------------------------------------
 # Detekce USB disku
@@ -860,13 +888,35 @@ def _parovat():
 
 
 def autostart_zapnuty(_polozka=None):
+    if ZABALENO:
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KLIC) as klic:
+                winreg.QueryValueEx(klic, "Holub")
+            return True
+        except OSError:
+            return False
     return os.path.isfile(CESTA_AUTOSTART)
+
+
+def _autostart_registr(zapnout):
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KLIC, 0,
+                        winreg.KEY_SET_VALUE) as klic:
+        if zapnout:
+            winreg.SetValueEx(klic, "Holub", 0, winreg.REG_SZ,
+                              '"%s"' % sys.executable)
+        else:
+            winreg.DeleteValue(klic, "Holub")
 
 
 def akce_autostart(ikona=None, _polozka=None):
     if autostart_zapnuty():
         try:
-            os.remove(CESTA_AUTOSTART)
+            if ZABALENO:
+                _autostart_registr(False)
+            else:
+                os.remove(CESTA_AUTOSTART)
             toast("Automatické spouštění vypnuto")
         except OSError:
             loguj(traceback.format_exc())
@@ -878,8 +928,11 @@ def akce_autostart(ikona=None, _polozka=None):
         obsah = ("import subprocess\n"
                  f'subprocess.Popen([r"{pythonw}", r"{skript}"], cwd=r"{SLOZKA}")\n')
         try:
-            with open(CESTA_AUTOSTART, "w", encoding="utf-8") as soubor:
-                soubor.write(obsah)
+            if ZABALENO:
+                _autostart_registr(True)
+            else:
+                with open(CESTA_AUTOSTART, "w", encoding="utf-8") as soubor:
+                    soubor.write(obsah)
             toast("Automatické spouštění zapnuto",
                   "Holub se teď spustí po každém přihlášení do Windows.")
         except OSError:
@@ -1566,6 +1619,10 @@ def po_startu(ikona):
 
 
 def main():
+    if "--dialog-slozka" in sys.argv:  # pomocný režim pro výběr složky
+        i = sys.argv.index("--dialog-slozka")
+        dialog_slozka_proces(sys.argv[i + 1], sys.argv[i + 2])
+        return
     try:  # vlastní identita na hlavním panelu — jinak si lišta půjčí ikonu Pythonu
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Holub")
     except Exception:
@@ -1573,6 +1630,11 @@ def main():
     # jen jedna instance naráz
     ctypes.windll.kernel32.CreateMutexW(None, False, "Holub-USB-sync")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        if "--ukaz-prehled" in sys.argv:  # z tlačítka na oznámení
+            udalost = ctypes.windll.kernel32.CreateEventW(
+                None, False, False, "Holub-ukaz-prehled")
+            ctypes.windll.kernel32.SetEvent(udalost)
+            return
         zajisti_toast_ikonu()
         toast("Holub už běží", "Ikonu najdeš v liště u hodin.")
         return

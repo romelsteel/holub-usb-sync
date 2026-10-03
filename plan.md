@@ -2,6 +2,22 @@
 
 *Plán vytvořen 2026-07-31 (Claude Fable 5). Tento soubor je zdroj pravdy pro stavbu appky — obsahuje rozhodnutí, design i postup, aby na něm šlo stavět v jakémkoli dalším chatu.*
 
+## Stav vydání (2026-10-04)
+
+**Vydáno `v1.0.0`** — instalátor pro Windows (`build_installer.py` → PyInstaller + Inno Setup, výstup `dist-installer/Holub-Setup-<verze>.exe`, per-user bez práv správce, CS + EN). Release na GitHubu: `romelsteel/holub-usb-sync`. Běh z instalace: data v `%APPDATA%\Holub`, autostart přes registr HKCU Run, dialog složky a „Otevřít přehled" přes `holub.exe` s parametry. Instalátor není podepsaný (SmartScreen varuje). Samotný instalátor zatím neprošel testem na čistém počítači.
+
+## Nápady na další funkce (schváleno Tomášem 2026-10-04, zatím nic nepostaveno)
+
+- **Ověření po kopírování** — porovnat velikost nebo hash souborů na USB a ukázat „záloha ověřena".
+- **Verze souborů** — koš už existuje; držet víc starých verzí jedné poznámky (pomůže při omylem přepsaném textu).
+- **Šifrování zálohy na USB** (volitelné), pro případ ztráty disku.
+- **Kontrola aktualizací** — jedno volání GitHub API při startu, toast „je nová verze" (dnes se aktualizuje jen ručním stažením).
+- **Podepsání instalátoru** — odstraní varování SmartScreen; certifikát stojí peníze, zdarma by šel SignPath pro open source.
+- **Další cíle než USB** — síťová složka, cloudová složka (OneDrive, Dropbox).
+- **Připomínka** — „USB nebylo zasunuto 7 dní, poznámky nejsou zálohované."
+- **Více vaultů** — každý s vlastním USB.
+- **Test instalátoru na čistém počítači / ve virtuálním stroji** před rozesláním.
+
 ## Stav stavby (2026-07-31)
 
 **Etapy 1–5 postavené** v `holub.py` (jeden soubor podle plánu). Sync logika prošla 24 testy na cvičném vaultu — včetně bezpečnostních pravidel (jednosměrný režim na PC nic nezapisuje, konflikty se nepřepisují, úprava poráží smazání). Appka nastartovala v liště bez pádu (smoke test s `--config` na cvičný config).

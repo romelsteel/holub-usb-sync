@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 SLOZKA = os.path.dirname(os.path.abspath(__file__))
-VERZE = sys.argv[1] if len(sys.argv) > 1 else "1.0.0"
+VERZE = sys.argv[1] if len(sys.argv) > 1 else None  # jinak holub.VERZE
 ISCC_CESTY = [
     os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"),
     r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
@@ -21,7 +21,9 @@ ISCC_CESTY = [
 def main():
     os.chdir(SLOZKA)
     sys.path.insert(0, SLOZKA)
-    import holub  # jen kvůli pixelové mapě holuba → ikona
+    import holub  # pixelová mapa holuba → ikona; a číslo verze
+    global VERZE
+    VERZE = VERZE or holub.VERZE
     ico = os.path.join("installer", "holub.ico")
     holub.vykresli_ikonu(holub.MAPA_STOJICI, holub.PALETA, 256).save(
         ico, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (256, 256)])

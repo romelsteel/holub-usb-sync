@@ -6,15 +6,19 @@
 
 **Vydáno `v1.0.0`** — instalátor pro Windows (`build_installer.py` → PyInstaller + Inno Setup, výstup `dist-installer/Holub-Setup-<verze>.exe`, per-user bez práv správce, CS + EN). Release na GitHubu: `romelsteel/holub-usb-sync`. Běh z instalace: data v `%APPDATA%\Holub`, autostart přes registr HKCU Run, dialog složky a „Otevřít přehled" přes `holub.exe` s parametry. Instalátor není podepsaný (SmartScreen varuje). Samotný instalátor zatím neprošel testem na čistém počítači.
 
-## Nápady na další funkce (schváleno Tomášem 2026-10-04, zatím nic nepostaveno)
+## Hotovo po vydání v1.0.0 (2026-10-04, v kódu, zatím nevydáno — čeká na nový instalátor)
 
-- **Ověření po kopírování** — porovnat velikost nebo hash souborů na USB a ukázat „záloha ověřena".
+- **Oprava: nový počítač nesmí smazat zálohu.** První synchronizace daného PC (nebo úplně prázdný vault) při existující záloze na USB, kterou vault nemá, vyhodí `ObnovaZUsb` a zeptá se: *Zkopírovat zálohu na PC* (kopíruje jen chybějící, nic nepřepisuje) / *Přepsat zálohu* / *Zrušit*. **Výjimka z bezpečnostního pravidla č. 1:** jednosměrný režim smí na PC zapisovat, ale jen po výslovném souhlasu v tomto dialogu.
+- **Ověření po kopírování.** `zkopiruj()` po každé kopii porovná velikost + SHA-256 zdroje a kopie; nesedí-li, vyhodí `OSError` (sync skončí chybou). Úspěšný sync s kopiemi v toastu/historii píše „✔ ověřeno“.
+- **Kontrola aktualizací.** `VERZE` v `holub.py` (drží se shodná s tagem releasu; `build_installer.py` ji bere odtud), při startu (po 15 s) jeden dotaz na GitHub API `releases/latest`; novější verze → toast s tlačítkem na stránku releasu (na jednu verzi jen jednou). Menu „🔄 Zkontrolovat aktualizace“ odpoví vždy. Vypnutí: `kontrola_aktualizaci: false` v configu. Nic se nestahuje.
+
+## Nápady na další funkce (schváleno Tomášem 2026-10-04; ověření a kontrola aktualizací hotové, ostatní nepostaveno)
+
 - **Verze souborů** — koš už existuje; držet víc starých verzí jedné poznámky (pomůže při omylem přepsaném textu).
 - **Šifrování zálohy na USB** (volitelné), pro případ ztráty disku.
-- **Kontrola aktualizací** — jedno volání GitHub API při startu, toast „je nová verze" (dnes se aktualizuje jen ručním stažením).
 - **Podepsání instalátoru** — odstraní varování SmartScreen; certifikát stojí peníze, zdarma by šel SignPath pro open source.
 - **Další cíle než USB** — síťová složka, cloudová složka (OneDrive, Dropbox).
-- **Připomínka** — „USB nebylo zasunuto 7 dní, poznámky nejsou zálohované."
+- **Připomínka** *(doporučený další krok)* — „USB nebylo zasunuto 7 dní, poznámky nejsou zálohované."
 - **Více vaultů** — každý s vlastním USB.
 - **Test instalátoru na čistém počítači / ve virtuálním stroji** před rozesláním.
 

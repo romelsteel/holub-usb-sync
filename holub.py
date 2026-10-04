@@ -9,6 +9,7 @@ Spuštění bez černého okna:  pythonw holub.py
 """
 
 import ctypes
+import hashlib
 import json
 import os
 import queue
@@ -19,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.request
 from datetime import datetime
 
 import pystray
@@ -46,6 +48,8 @@ CESTA_AUTOSTART = os.path.join(
     os.environ.get("APPDATA", ""), "Microsoft", "Windows",
     "Start Menu", "Programs", "Startup", "Holub.pyw")
 
+VERZE = "1.0.0"                       # drží se shodná s tagem releasu (v1.0.0)
+REPO = "romelsteel/holub-usb-sync"
 ZNACKA_USB = ".holub-usb"              # párovací soubor v kořeni USB disku
 SLOZKA_ZALOHY = "Vault"                # složka s kopií vaultu na USB
 SOUBOR_SNIMKU = "holub-snapshot.json"  # paměť posledního syncu (obousměrný režim)
@@ -68,6 +72,8 @@ VYCHOZI_CONFIG = {
     "casovac": "vypnuto",              # "vypnuto" | "interval" | "denne"
     "casovac_minuty": 30,              # pro režim "interval"
     "casovac_denne": "18:00",          # pro režim "denne" (HH:MM)
+    "kontrola_aktualizaci": True,      # při startu se zeptat GitHubu na novou verzi
+    "upozorneno_na_verzi": "",         # na kterou verzi už toast byl (nenaléhat)
 }
 
 CFG = dict(VYCHOZI_CONFIG)
@@ -76,7 +82,8 @@ CFG = dict(VYCHOZI_CONFIG)
 # "usb" je seznam všech připojených spárovaných disků (např. ["E:\\", "F:\\"])
 S = {"stav": "ceka", "usb": [], "bezi": True, "chyba_text": "",
      "vault_chybi": False, "casovac_pokus": 0.0, "casovac_den": "",
-     "povolit_mazani": False, "mazani_ceka": False}
+     "povolit_mazani": False, "mazani_ceka": False,
+     "obnova": ""}  # rozhodnutí o obnově zálohy: "" | "ano" | "ne" (jeden běh)
 IKONA = {"obj": None}          # pystray ikona (naplní se v main)
 ZAMEK_SYNCU = threading.Lock()  # sync nikdy nesmí běžet dvakrát naráz
 
@@ -433,6 +440,37 @@ class MnohoMazani(Exception):
         self.celkem = celkem
 
 
+class ObnovaZUsb(Exception):
+    """První synchronizace tohoto PC, ale na USB už je záloha, kterou vault nemá
+    (typicky nový počítač s prázdným vaultem). Zrcadlení by zálohu smazalo."""
+
+    def __init__(self, disk, chybi, celkem):
+        super().__init__(f"na USB {disk} je {chybi} poznámek, které vault nemá")
+        self.disk = disk
+        self.chybi = chybi
+        self.celkem = celkem
+
+
+def chybejici_v_vaultu(vault, cil, ignorovat):
+    """Soubory ze zálohy na USB, které vault nemá — ale jen když jde o první
+    synchronizaci tohoto PC (nebo je vault úplně prázdný). Jinak prázdný seznam."""
+    na_usb = projdi(cil, ignorovat)
+    if not na_usb:
+        return [], 0
+    na_pc = projdi(vault, ignorovat)
+    chybi = [rel for rel in na_usb if rel not in na_pc]
+    if chybi and (not na_pc or not CFG.get("posledni_sync")):
+        return chybi, len(na_usb)
+    return [], len(na_usb)
+
+
+def obnov_z_usb(cil, vault, chybi):
+    """Zkopíruje ze zálohy na PC jen to, co tam chybí. Nic nepřepisuje."""
+    for rel in chybi:
+        zkopiruj(cil, vault, rel)
+    return len(chybi)
+
+
 def zkontroluj_pojistku(kolik, celkem, kde, povoleno):
     if povoleno or kolik < POJISTKA_MIN_SOUBORU:
         return
@@ -488,10 +526,25 @@ def stejne(a, b):
     return a[1] == b[1] and abs(a[0] - b[0]) <= TOLERANCE_CASU
 
 
+def hash_souboru(cesta):
+    h = hashlib.sha256()
+    with open(cesta, "rb") as soubor:
+        for blok in iter(lambda: soubor.read(1024 * 1024), b""):
+            h.update(blok)
+    return h.digest()
+
+
 def zkopiruj(odkud, kam, rel):
+    """Zkopíruje soubor a hned ho ověří (velikost + SHA-256 zdroje a kopie).
+    Nesedí-li kopie, vyhodí OSError — záloha, které se nedá věřit, je horší
+    než žádná."""
+    zdroj = os.path.join(odkud, rel)
     cil = os.path.join(kam, rel)
     os.makedirs(os.path.dirname(cil) or kam, exist_ok=True)
-    shutil.copy2(os.path.join(odkud, rel), cil)
+    shutil.copy2(zdroj, cil)
+    if (os.path.getsize(zdroj) != os.path.getsize(cil)
+            or hash_souboru(zdroj) != hash_souboru(cil)):
+        raise OSError(f"Kopie souboru „{rel}“ se po zkopírování liší od originálu.")
 
 
 def smaz_prazdne_slozky(koren):
@@ -731,6 +784,8 @@ def synchronizuj():
             return
         povolit_mazani = S["povolit_mazani"]
         S["povolit_mazani"] = False  # potvrzení platí jen pro jeden běh
+        obnova = S["obnova"]
+        S["obnova"] = ""
 
         nastav_stav("sync")
         zacatek = time.time()
@@ -741,16 +796,27 @@ def synchronizuj():
         for disk in disky:
             disk_prave = disk
             cil = os.path.join(disk, SLOZKA_ZALOHY)
+            if obnova != "ne":
+                chybi, celkem = chybejici_v_vaultu(vault, cil, ignorovat)
+                if chybi:
+                    if obnova != "ano":
+                        raise ObnovaZUsb(disk, len(chybi), celkem)
+                    pocet = obnov_z_usb(cil, vault, chybi)
+                    casti.append(f"obnoveno z USB: {pocet}")
             if CFG.get("rezim") == "obousmerny":
                 vysledek = sync_obousmerny(
                     vault, cil, os.path.join(disk, SOUBOR_SNIMKU), ignorovat,
                     povolit_mazani=povolit_mazani)
                 cast = zprava_obousmerna(vysledek)
+                if vysledek["na_usb"] + vysledek["na_pc"]:
+                    cast += " · ✔ ověřeno"
                 konflikty_celkem += vysledek["konflikty"]
             else:
                 zkopirovano, smazano = sync_jednosmerny(
                     vault, cil, ignorovat, povolit_mazani=povolit_mazani)
                 cast = zprava_jednosmerna(zkopirovano, smazano)
+                if zkopirovano:
+                    cast += " · ✔ ověřeno"
             casti.append(cast if len(disky) == 1 else f"{disk[0]}: {cast}")
             vycisti_kos(os.path.join(disk, KOS_SLOZKA))
         vycisti_kos(os.path.join(vault, KOS_SLOZKA))
@@ -770,6 +836,19 @@ def synchronizuj():
         time.sleep(1.5)  # zelená fajfka chvíli svítí…
         if S["stav"] == "hotovo":
             nastav_stav("ok")  # …a pak zpět na „vše v pořádku"
+    except ObnovaZUsb as dotaz:
+        # nic se nezměnilo, čeká se na rozhodnutí: kopírovat zálohu na PC?
+        S["mazani_ceka"] = True  # časovač mezitím nespouští další běh
+        POTVRZENI["obnova"] = {"disk": dotaz.disk, "chybi": dotaz.chybi,
+                               "celkem": dotaz.celkem}
+        kratce = f"pozastaveno — na USB je záloha ({dotaz.chybi} poznámek)"
+        zapis_historii(kratce, chyba=True)
+        nastav_stav("chyba", kratce)
+        toast("Na USB je záloha",
+              f"Tenhle počítač ještě nesynchronizoval a na USB je "
+              f"{dotaz.chybi} poznámek, které tu chybí. Zvol, jestli je "
+              "zkopírovat sem.", prehled=True)
+        zeptej_obnovu()
     except MnohoMazani as pojistka:
         # bezpečnostní brzda — nic se nesmazalo, čeká se na rozhodnutí
         S["mazani_ceka"] = True
@@ -1102,7 +1181,7 @@ BARVY = {
 OKNO = {"fronta": None}
 NAHLED = {"text": ""}
 KONFLIKTY = {"seznam": [], "verze": 0, "hledam": False}
-POTVRZENI = {"info": None}  # čekající dotaz pojistky hromadného mazání
+POTVRZENI = {"info": None, "obnova": None}  # čekající dotazy (mazání / obnova)
 
 
 def zajisti_vlakno_okna():
@@ -1127,6 +1206,12 @@ def akce_potvrzeni_mazani():
     """Otevře dotaz pojistky: opravdu smazat tolik poznámek najednou?"""
     zajisti_vlakno_okna()
     OKNO["fronta"].put("dialog-mazani")
+
+
+def zeptej_obnovu():
+    """Otevře dotaz: zkopírovat zálohu z USB na tenhle počítač?"""
+    zajisti_vlakno_okna()
+    OKNO["fronta"].put("dialog-obnova")
 
 
 def najdi_konflikty():
@@ -1498,6 +1583,51 @@ def vlakno_okna():
         dialog.attributes("-topmost", True)
         dialog.lift()
 
+    def zeptej_obnovu_okno():
+        """Dotaz: na USB je záloha, tenhle PC ji nemá — zkopírovat sem?"""
+        info = POTVRZENI["obnova"]
+        if info is None or prvky.get("dialog_obnova"):
+            return
+        dialog = tk.Toplevel(koren)
+        prvky["dialog_obnova"] = dialog
+        dialog.title("Holub — na USB je záloha")
+        dialog.configure(bg=B["pozadi"])
+        dialog.resizable(False, False)
+        dialog.geometry("+320+260")
+        ztmav_titulek(dialog)
+        zprava = (f"Na USB disku {info['disk']} je záloha ({info['celkem']} souborů) "
+                  f"a tenhle počítač {info['chybi']} z nich nemá.\n\n"
+                  "Je to nový počítač? Pak zálohu zkopíruj sem — nic se nesmaže "
+                  "ani nepřepíše.\n\n"
+                  "Pokud zvolíš „Přepsat zálohu“, záloha na USB se srovná podle "
+                  "tohoto počítače\n"
+                  f"(co tu chybí, jde na USB do koše {KOS_SLOZKA}).")
+        tk.Label(dialog, text=zprava, bg=B["pozadi"], fg=B["text"],
+                 font=("Segoe UI", 10), justify="left").pack(
+            padx=18, pady=(16, 10), anchor="w")
+
+        def zavri(volba):
+            S["mazani_ceka"] = False
+            POTVRZENI["obnova"] = None
+            prvky.pop("dialog_obnova", None)
+            dialog.destroy()
+            if volba:
+                S["obnova"] = volba
+                akce_sync()
+            else:
+                nastav_stav("ok" if S["usb"] else "ceka")
+
+        rada = tk.Frame(dialog, bg=B["pozadi"])
+        rada.pack(fill="x", padx=18, pady=(4, 16))
+        tlacitko(rada, "Zkopírovat zálohu na PC", lambda: zavri("ano")).pack(
+            side="right", padx=(8, 0))
+        tlacitko(rada, "Přepsat zálohu", lambda: zavri("ne"),
+                 barva=B["nebezpeci"]).pack(side="right", padx=(8, 0))
+        tlacitko(rada, "Zrušit", lambda: zavri("")).pack(side="right")
+        dialog.protocol("WM_DELETE_WINDOW", lambda: zavri(""))
+        dialog.attributes("-topmost", True)
+        dialog.lift()
+
     def zpracuj_frontu():
         try:
             while True:
@@ -1522,6 +1652,8 @@ def vlakno_okna():
                     zeptej("denne")
                 elif prikaz == "dialog-mazani":
                     zeptej_mazani()
+                elif prikaz == "dialog-obnova":
+                    zeptej_obnovu_okno()
         except queue.Empty:
             pass
         koren.after(200, zpracuj_frontu)
@@ -1599,11 +1731,67 @@ def postav_menu():
         pystray.MenuItem("📁 Otevřít zálohu na USB", akce_otevrit_zalohu),
         pystray.MenuItem("📂 Zvolit složku vaultu…", akce_zvolit_vault),
         pystray.MenuItem("🔌 Spárovat nový USB disk…", akce_parovat),
+        pystray.MenuItem(f"🔄 Zkontrolovat aktualizace (verze {VERZE})",
+                         akce_aktualizace),
         pystray.MenuItem("Spouštět se systémem Windows", akce_autostart,
                          checked=lambda _p: autostart_zapnuty()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("✕ Ukončit", akce_konec),
     )
+
+
+def _cislo_verze(text):
+    """'v1.2.3' → (1, 2, 3); cokoli nečitelného → () (= nic nenabízet)."""
+    try:
+        return tuple(int(c) for c in text.strip().lstrip("vV").split("."))
+    except ValueError:
+        return ()
+
+
+def zkontroluj_aktualizace(rucne=False):
+    """Zeptá se GitHubu na nejnovější release. Při startu mlčí, pokud je vše
+    aktuální nebo chybí internet; ručně vždy odpoví. Nic nestahuje."""
+    try:
+        pozadavek = urllib.request.Request(
+            f"https://api.github.com/repos/{REPO}/releases/latest",
+            headers={"User-Agent": "Holub", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(pozadavek, timeout=10) as odpoved:
+            data = json.load(odpoved)
+        tag = data.get("tag_name", "")
+        nova, stavajici = _cislo_verze(tag), _cislo_verze(VERZE)
+        if nova and stavajici and nova > stavajici:
+            if rucne or CFG.get("upozorneno_na_verzi") != tag:
+                CFG["upozorneno_na_verzi"] = tag
+                uloz_config()
+                url = data.get("html_url") or f"https://github.com/{REPO}/releases"
+                try:
+                    oznameni = Notification(
+                        app_id="Holub", title=f"Je tu nová verze Holuba ({tag})",
+                        msg=f"Máš {VERZE}. Stáhni si nový instalátor — poznámky "
+                            "ani nastavení se nesmažou.",
+                        icon=CESTA_TOAST_IKONY)
+                    oznameni.add_actions("Otevřít stránku ke stažení", url)
+                    oznameni.show()
+                except Exception:
+                    loguj("Toast selhal:\n" + traceback.format_exc())
+        elif rucne:
+            toast("Holub je aktuální", f"Máš nejnovější verzi ({VERZE}).")
+    except Exception:
+        loguj("Kontrola aktualizací selhala:\n" + traceback.format_exc())
+        if rucne:
+            toast("Kontrola aktualizací se nepovedla",
+                  "Zkontroluj připojení k internetu a zkus to znovu.")
+
+
+def akce_aktualizace(_ikona=None, _polozka=None):
+    threading.Thread(target=zkontroluj_aktualizace, args=(True,),
+                     daemon=True).start()
+
+
+def kontrola_pri_startu():
+    time.sleep(15)  # ať appka nejdřív nastartuje a proběhne první sync
+    if CFG.get("kontrola_aktualizaci", True):
+        zkontroluj_aktualizace()
 
 
 def po_startu(ikona):
@@ -1612,6 +1800,7 @@ def po_startu(ikona):
     threading.Thread(target=animace, daemon=True).start()
     threading.Thread(target=casovac_smycka, daemon=True).start()
     threading.Thread(target=cekac_na_prehled, daemon=True).start()
+    threading.Thread(target=kontrola_pri_startu, daemon=True).start()
     if not CFG.get("vault"):
         toast("Ahoj, tady Holub 🕊️",
               "Budu ti zálohovat poznámky na USB. Nejdřív mi ukaž složku vaultu.")

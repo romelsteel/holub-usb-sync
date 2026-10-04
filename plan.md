@@ -4,7 +4,7 @@
 
 ## Stav vydání (2026-10-04)
 
-**Vydáno `v1.0.0`** — instalátor pro Windows (`build_installer.py` → PyInstaller + Inno Setup, výstup `dist-installer/Holub-Setup-<verze>.exe`, per-user bez práv správce, CS + EN). Release na GitHubu: `romelsteel/holub-usb-sync`. Běh z instalace: data v `%APPDATA%\Holub`, autostart přes registr HKCU Run, dialog složky a „Otevřít přehled" přes `holub.exe` s parametry. Instalátor není podepsaný (SmartScreen varuje). Samotný instalátor zatím neprošel testem na čistém počítači.
+**Vydáno `v1.1.0`** (obnova zálohy na nový PC, ověření kopií, kontrola aktualizací, připomínka; předtím `v1.0.0`) — instalátor pro Windows (`build_installer.py` → PyInstaller + Inno Setup, výstup `dist-installer/Holub-Setup-<verze>.exe`, per-user bez práv správce, CS + EN). Release na GitHubu: `romelsteel/holub-usb-sync`. Běh z instalace: data v `%APPDATA%\Holub`, autostart přes registr HKCU Run, dialog složky a „Otevřít přehled" přes `holub.exe` s parametry. Instalátor není podepsaný (SmartScreen varuje). Samotný instalátor zatím neprošel testem na čistém počítači.
 
 ## Hotovo po vydání v1.0.0 (2026-10-04, v kódu, zatím nevydáno — čeká na nový instalátor)
 

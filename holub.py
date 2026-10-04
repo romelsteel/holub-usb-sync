@@ -48,7 +48,7 @@ CESTA_AUTOSTART = os.path.join(
     os.environ.get("APPDATA", ""), "Microsoft", "Windows",
     "Start Menu", "Programs", "Startup", "Holub.pyw")
 
-VERZE = "1.0.0"                       # drží se shodná s tagem releasu (v1.0.0)
+VERZE = "1.1.0"                       # drží se shodná s tagem releasu (v1.1.0)
 REPO = "romelsteel/holub-usb-sync"
 ZNACKA_USB = ".holub-usb"              # párovací soubor v kořeni USB disku
 SLOZKA_ZALOHY = "Vault"                # složka s kopií vaultu na USB

@@ -1,7 +1,7 @@
 ; Inno Setup skript pro instalátor Holuba (per-user, bez práv správce)
 #define AppVer GetEnv("HOLUB_VERSION")
 #if AppVer == ""
-  #define AppVer "1.0.0"
+  #define AppVer "1.1.0"
 #endif
 
 [Setup]

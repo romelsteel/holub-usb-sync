@@ -73,6 +73,8 @@ VYCHOZI_CONFIG = {
     "casovac_minuty": 30,              # pro režim "interval"
     "casovac_denne": "18:00",          # pro režim "denne" (HH:MM)
     "kontrola_aktualizaci": True,      # při startu se zeptat GitHubu na novou verzi
+    "pripominka_dny": 7,               # po kolika dnech bez zálohy připomenout (0 = vypnuto)
+    "posledni_pripomenuti": "",        # datum poslední připomínky (max. jednou denně)
     "upozorneno_na_verzi": "",         # na kterou verzi už toast byl (nenaléhat)
 }
 
@@ -1062,6 +1064,53 @@ def hlidac():
         time.sleep(max(2, int(CFG.get("interval_kontroly_s", 5))))
 
 
+def stari_zalohy_dny():
+    """Kolik dní uplynulo od posledního úspěšného syncu (None = ještě nikdy)."""
+    try:
+        posledni = datetime.fromisoformat(CFG.get("posledni_sync", ""))
+    except ValueError:
+        return None
+    return (datetime.now() - posledni).days
+
+
+def zkontroluj_pripominku():
+    """Připomene zálohu, která je starší než nastavený počet dní. Nejvýš
+    jednou denně; bez předchozí zálohy (nový uživatel) mlčí."""
+    dny = CFG.get("pripominka_dny", 7)
+    stari = stari_zalohy_dny()
+    dnes = datetime.now().date().isoformat()
+    if (not dny or stari is None or stari < dny
+            or CFG.get("posledni_pripomenuti") == dnes or S["stav"] == "sync"):
+        return
+    CFG["posledni_pripomenuti"] = dnes
+    uloz_config()
+    if S["usb"]:
+        toast("Záloha je stará", f"Poslední úspěšná záloha byla před {stari} dny, "
+              "i když je USB připojené. Podívej se do Přehledu, co se děje.",
+              prehled=True)
+    else:
+        toast("Poznámky nejsou zálohované",
+              f"Poslední záloha byla před {stari} dny. Zasuň USB disk — "
+              "synchronizace se spustí sama.")
+
+
+def pripominka_smycka():
+    time.sleep(45)  # ať nejdřív proběhne případný sync po startu
+    while S["bezi"]:
+        try:
+            zkontroluj_pripominku()
+        except Exception:
+            loguj("Připomínka selhala:" + chr(10) + traceback.format_exc())
+        time.sleep(3600)
+
+
+def nastav_pripominku(dny):
+    CFG["pripominka_dny"] = dny
+    uloz_config()
+    if IKONA["obj"]:
+        IKONA["obj"].update_menu()
+
+
 def nastav_casovac(rezim, minuty=None):
     CFG["casovac"] = rezim
     if minuty is not None:
@@ -1728,6 +1777,16 @@ def postav_menu():
                 text_denniho_casu, lambda *_: akce_casovac_dialog("denne"),
                 checked=lambda _p: CFG.get("casovac") == "denne", radio=True),
         )),
+        pystray.MenuItem("🔔 Připomínka zálohy", pystray.Menu(
+            pystray.MenuItem(
+                "Vypnutá", lambda *_: nastav_pripominku(0),
+                checked=lambda _p: not CFG.get("pripominka_dny"), radio=True),
+            *[pystray.MenuItem(
+                f"Po {dny} dnech bez zálohy",
+                lambda *_, d=dny: nastav_pripominku(d),
+                checked=lambda _p, d=dny: CFG.get("pripominka_dny") == d,
+                radio=True) for dny in (3, 7, 14)],
+        )),
         pystray.MenuItem("📁 Otevřít zálohu na USB", akce_otevrit_zalohu),
         pystray.MenuItem("📂 Zvolit složku vaultu…", akce_zvolit_vault),
         pystray.MenuItem("🔌 Spárovat nový USB disk…", akce_parovat),
@@ -1801,6 +1860,7 @@ def po_startu(ikona):
     threading.Thread(target=casovac_smycka, daemon=True).start()
     threading.Thread(target=cekac_na_prehled, daemon=True).start()
     threading.Thread(target=kontrola_pri_startu, daemon=True).start()
+    threading.Thread(target=pripominka_smycka, daemon=True).start()
     if not CFG.get("vault"):
         toast("Ahoj, tady Holub 🕊️",
               "Budu ti zálohovat poznámky na USB. Nejdřív mi ukaž složku vaultu.")

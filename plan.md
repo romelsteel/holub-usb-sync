@@ -12,13 +12,14 @@
 - **Ověření po kopírování.** `zkopiruj()` po každé kopii porovná velikost + SHA-256 zdroje a kopie; nesedí-li, vyhodí `OSError` (sync skončí chybou). Úspěšný sync s kopiemi v toastu/historii píše „✔ ověřeno“.
 - **Kontrola aktualizací.** `VERZE` v `holub.py` (drží se shodná s tagem releasu; `build_installer.py` ji bere odtud), při startu (po 15 s) jeden dotaz na GitHub API `releases/latest`; novější verze → toast s tlačítkem na stránku releasu (na jednu verzi jen jednou). Menu „🔄 Zkontrolovat aktualizace“ odpoví vždy. Vypnutí: `kontrola_aktualizaci: false` v configu. Nic se nestahuje.
 
-## Nápady na další funkce (schváleno Tomášem 2026-10-04; ověření a kontrola aktualizací hotové, ostatní nepostaveno)
+- **Připomínka zálohy.** Vlákno `pripominka_smycka` (kontrola hodinově, první po 45 s od startu): když je poslední úspěšný sync starší než `pripominka_dny` (výchozí 7, 0 = vypnuto), ukáže toast — bez USB „zasuň disk“, s USB „záloha je stará, podívej se do Přehledu“. Nejvýš jednou denně (`posledni_pripomenuti`); kdo ještě nikdy nesynchronizoval, nic nedostane. Menu „🔔 Připomínka zálohy“: vypnutá / 3 / 7 / 14 dní.
+
+## Nápady na další funkce (schváleno Tomášem 2026-10-04; ověření, kontrola aktualizací a připomínka hotové, ostatní nepostaveno)
 
 - **Verze souborů** — koš už existuje; držet víc starých verzí jedné poznámky (pomůže při omylem přepsaném textu).
 - **Šifrování zálohy na USB** (volitelné), pro případ ztráty disku.
 - **Podepsání instalátoru** — odstraní varování SmartScreen; certifikát stojí peníze, zdarma by šel SignPath pro open source.
 - **Další cíle než USB** — síťová složka, cloudová složka (OneDrive, Dropbox).
-- **Připomínka** *(doporučený další krok)* — „USB nebylo zasunuto 7 dní, poznámky nejsou zálohované."
 - **Více vaultů** — každý s vlastním USB.
 - **Test instalátoru na čistém počítači / ve virtuálním stroji** před rozesláním.
 

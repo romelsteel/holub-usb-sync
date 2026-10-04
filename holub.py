@@ -1790,10 +1790,10 @@ def postav_menu():
         pystray.MenuItem("📁 Otevřít zálohu na USB", akce_otevrit_zalohu),
         pystray.MenuItem("📂 Zvolit složku vaultu…", akce_zvolit_vault),
         pystray.MenuItem("🔌 Spárovat nový USB disk…", akce_parovat),
-        pystray.MenuItem(f"🔄 Zkontrolovat aktualizace (verze {VERZE})",
-                         akce_aktualizace),
         pystray.MenuItem("Spouštět se systémem Windows", akce_autostart,
                          checked=lambda _p: autostart_zapnuty()),
+        pystray.MenuItem(f"🔄 Zkontrolovat aktualizace (verze {VERZE})",
+                         akce_aktualizace),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("✕ Ukončit", akce_konec),
     )

@@ -48,7 +48,7 @@ CESTA_AUTOSTART = os.path.join(
     os.environ.get("APPDATA", ""), "Microsoft", "Windows",
     "Start Menu", "Programs", "Startup", "Holub.pyw")
 
-VERZE = "1.1.0"                       # drží se shodná s tagem releasu (v1.1.0)
+VERZE = "1.2.0"                       # drží se shodná s tagem releasu (v1.2.0)
 REPO = "romelsteel/holub-usb-sync"
 ZNACKA_USB = ".holub-usb"              # párovací soubor v kořeni USB disku
 SLOZKA_ZALOHY = "Vault"                # složka s kopií vaultu na USB
@@ -65,7 +65,7 @@ AUTOSTART_KLIC = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 VYCHOZI_CONFIG = {
     "vault": "",
-    "rezim": "jednosmerny",            # "jednosmerny" | "obousmerny"
+    "rezim": "na_usb",                 # "na_usb" (PC → USB) | "na_pc" (USB → PC) | "obousmerny"
     "interval_kontroly_s": 5,
     "ignorovat": [".obsidian/workspace.json", ".obsidian/workspace-mobile.json"],
     "posledni_sync": "",
@@ -76,8 +76,13 @@ VYCHOZI_CONFIG = {
     "pripominka_dny": 7,               # po kolika dnech bez zálohy připomenout (0 = vypnuto)
     "posledni_pripomenuti": "",        # datum poslední připomínky (max. jednou denně)
     "upozorneno_na_verzi": "",         # na kterou verzi už toast byl (nenaléhat)
+    "sync_pri_zasunuti": True,         # po zasunutí USB disku hned synchronizovat
+    "oznameni_uspech": True,           # toast po úspěšné synchronizaci (chyby a konflikty vždy)
+    "kos_dny": KOS_DNY,                # jak dlouho koš drží smazané soubory
+    "pojistka_podil": int(POJISTKA_PODIL * 100),  # % poznámek, nad které se mazání zastaví a zeptá
 }
 
+REZIMY = ("na_usb", "na_pc", "obousmerny")
 CFG = dict(VYCHOZI_CONFIG)
 
 # Sdílený stav appky. "stav" je jedno z: ceka / ok / sync / chyba / hotovo
@@ -316,6 +321,8 @@ def nacti_config():
             CFG.update(json.load(soubor))
     except (OSError, ValueError):
         pass  # první spuštění (nebo poškozený config) → výchozí hodnoty
+    if CFG.get("rezim") not in REZIMY:  # "jednosmerny" z verze 1.1.0 a starších
+        CFG["rezim"] = "na_usb"
 
 
 def uloz_config():
@@ -426,7 +433,8 @@ def najdi_usb_vsechny():
 # Synchronizace — jádro appky
 #
 # Bezpečnostní pravidla z plan.md:
-#   1. Jednosměrný režim NIKDY nezapisuje ani nemaže na PC.
+#   1. Režim „PC → USB“ NIKDY nezapisuje ani nemaže na PC (a režim „USB → PC“
+#      zase na USB — vždy se jen čte ze zdroje).
 #   2. Obousměrný režim NIKDY potichu nepřepisuje konflikt.
 #   3. Nikdy nesyncovat bez platné párovací značky na disku.
 # ---------------------------------------------------------------------------
@@ -476,7 +484,7 @@ def obnov_z_usb(cil, vault, chybi):
 def zkontroluj_pojistku(kolik, celkem, kde, povoleno):
     if povoleno or kolik < POJISTKA_MIN_SOUBORU:
         return
-    if kolik > celkem * POJISTKA_PODIL:
+    if kolik > celkem * CFG.get("pojistka_podil", 20) / 100:
         raise MnohoMazani(kde, kolik, celkem)
 
 
@@ -502,7 +510,7 @@ def vycisti_kos(kos):
             stari = (datetime.now() - datetime.fromisoformat(jmeno)).days
         except ValueError:
             continue  # cizí složka — nesahat
-        if stari > KOS_DNY:
+        if stari > CFG.get("kos_dny", KOS_DNY):
             shutil.rmtree(os.path.join(kos, jmeno), ignore_errors=True)
 
 
@@ -559,29 +567,42 @@ def smaz_prazdne_slozky(koren):
             pass
 
 
-def sync_jednosmerny(vault, cil, ignorovat, naostro=True, povolit_mazani=False):
-    """Zrcadlo PC → USB. Na PC nesahá — jen čte.
+def sync_jednosmerny(vault, cil, ignorovat, naostro=True, povolit_mazani=False,
+                     smer="na_usb"):
+    """Zrcadlo v jednom směru.
+
+    smer="na_usb": PC → USB. Na PC nesahá — jen čte.
+    smer="na_pc":  USB → PC. Na USB nesahá — jen čte; zapisuje do vaultu.
 
     S naostro=False jen spočítá, co by se stalo, a ničeho se nedotkne.
-    „Smazání" na USB je přesun do koše .holub-kos (drží se KOS_DNY dní)."""
-    na_pc = projdi(vault, ignorovat)
-    na_usb = projdi(cil, ignorovat)
-    kopirovat = [rel for rel, udaje in na_pc.items()
-                 if rel not in na_usb or not stejne(udaje, na_usb[rel])]
-    smazat = [rel for rel in na_usb if rel not in na_pc]
+    „Smazání" na cílové straně je přesun do koše .holub-kos (drží se kos_dny dní)."""
+    if smer == "na_pc":
+        zdroj_koren, cil_koren = cil, vault
+        kde = "na PC"
+        kos = os.path.join(vault, KOS_SLOZKA)
+        if not os.path.isdir(zdroj_koren):
+            return 0, 0  # na USB zatím žádná záloha není — nemá co přinést
+    else:
+        zdroj_koren, cil_koren = vault, cil
+        kde = "na USB"
+        kos = os.path.join(os.path.dirname(cil), KOS_SLOZKA)
+    ve_zdroji = projdi(zdroj_koren, ignorovat)
+    v_cili = projdi(cil_koren, ignorovat) if os.path.isdir(cil_koren) else {}
+    kopirovat = [rel for rel, udaje in ve_zdroji.items()
+                 if rel not in v_cili or not stejne(udaje, v_cili[rel])]
+    smazat = [rel for rel in v_cili if rel not in ve_zdroji]
 
     if not naostro:
         return len(kopirovat), len(smazat)
 
-    zkontroluj_pojistku(len(smazat), len(na_usb), "na USB", povolit_mazani)
-    os.makedirs(cil, exist_ok=True)
+    zkontroluj_pojistku(len(smazat), len(v_cili), kde, povolit_mazani)
+    os.makedirs(cil_koren, exist_ok=True)
     for rel in kopirovat:
-        zkopiruj(vault, cil, rel)
-    kos = os.path.join(os.path.dirname(cil), KOS_SLOZKA)
+        zkopiruj(zdroj_koren, cil_koren, rel)
     for rel in smazat:
-        presun_do_kose(kos, cil, rel)
+        presun_do_kose(kos, cil_koren, rel)
     if smazat:
-        smaz_prazdne_slozky(cil)
+        smaz_prazdne_slozky(cil_koren)
     return len(kopirovat), len(smazat)
 
 
@@ -730,16 +751,17 @@ def formatuj_cas(sekundy):
     return f"{round(sekundy)} s"
 
 
-def zprava_jednosmerna(zkopirovano, smazano, trvani=None):
+def zprava_jednosmerna(zkopirovano, smazano, trvani=None, smer="na_usb"):
+    kam = "PC" if smer == "na_pc" else "USB"
     casti = []
     if zkopirovano:
         casti.append(popis_poctu(zkopirovano, (
-            "poznámka zkopírována na USB",
-            "poznámky zkopírovány na USB",
-            "poznámek zkopírováno na USB")))
+            f"poznámka zkopírována na {kam}",
+            f"poznámky zkopírovány na {kam}",
+            f"poznámek zkopírováno na {kam}")))
     if smazano:
         casti.append(popis_poctu(smazano, (
-            "smazána na USB", "smazány na USB", "smazáno na USB")))
+            f"smazána na {kam}", f"smazány na {kam}", f"smazáno na {kam}")))
     if not casti:
         casti.append("vše už bylo aktuální")
     if trvani is not None:
@@ -798,14 +820,16 @@ def synchronizuj():
         for disk in disky:
             disk_prave = disk
             cil = os.path.join(disk, SLOZKA_ZALOHY)
-            if obnova != "ne":
+            rezim = CFG.get("rezim")
+            # V režimu „USB → PC“ je normální, že PC něco nemá — žádný dotaz.
+            if obnova != "ne" and rezim != "na_pc":
                 chybi, celkem = chybejici_v_vaultu(vault, cil, ignorovat)
                 if chybi:
                     if obnova != "ano":
                         raise ObnovaZUsb(disk, len(chybi), celkem)
                     pocet = obnov_z_usb(cil, vault, chybi)
                     casti.append(f"obnoveno z USB: {pocet}")
-            if CFG.get("rezim") == "obousmerny":
+            if rezim == "obousmerny":
                 vysledek = sync_obousmerny(
                     vault, cil, os.path.join(disk, SOUBOR_SNIMKU), ignorovat,
                     povolit_mazani=povolit_mazani)
@@ -815,10 +839,18 @@ def synchronizuj():
                 konflikty_celkem += vysledek["konflikty"]
             else:
                 zkopirovano, smazano = sync_jednosmerny(
-                    vault, cil, ignorovat, povolit_mazani=povolit_mazani)
-                cast = zprava_jednosmerna(zkopirovano, smazano)
+                    vault, cil, ignorovat, povolit_mazani=povolit_mazani,
+                    smer=rezim)
+                cast = zprava_jednosmerna(zkopirovano, smazano, smer=rezim)
                 if zkopirovano:
                     cast += " · ✔ ověřeno"
+                # Snímek obousměrného režimu by po jednosměrných úpravách zastaral
+                # a pak by si „smazáno“ vyložil špatně → radši pryč (příští
+                # obousměrný běh pak jen opatrně slévá, nic nemaže).
+                try:
+                    os.remove(os.path.join(disk, SOUBOR_SNIMKU))
+                except OSError:
+                    pass
             casti.append(cast if len(disky) == 1 else f"{disk[0]}: {cast}")
             vycisti_kos(os.path.join(disk, KOS_SLOZKA))
         vycisti_kos(os.path.join(vault, KOS_SLOZKA))
@@ -834,7 +866,8 @@ def synchronizuj():
         uloz_config()
         zapis_historii(zprava)
         nastav_stav("hotovo")
-        toast("Synchronizace dokončena", zprava, prehled=True)
+        if CFG.get("oznameni_uspech", True):
+            toast("Synchronizace dokončena", zprava, prehled=True)
         time.sleep(1.5)  # zelená fajfka chvíli svítí…
         if S["stav"] == "hotovo":
             nastav_stav("ok")  # …a pak zpět na „vše v pořádku"
@@ -1057,7 +1090,8 @@ def hlidac():
         S["usb"] = disky
         if nove and not S["vault_chybi"]:
             nastav_stav("ok")
-            akce_sync()  # sync při zasunutí (obslouží všechny připojené)
+            if CFG.get("sync_pri_zasunuti", True):
+                akce_sync()  # sync při zasunutí (obslouží všechny připojené)
         elif not disky and byly:
             if S["stav"] not in ("sync", "chyba"):
                 nastav_stav("ceka")
@@ -1245,6 +1279,18 @@ def akce_okno(_ikona=None, _polozka=None):
     OKNO["fronta"].put("ukaz")
 
 
+def akce_nastaveni(_ikona=None, _polozka=None):
+    """Otevře okno Nastavení (nebo ho vytáhne dopředu)."""
+    zajisti_vlakno_okna()
+    OKNO["fronta"].put("nastaveni")
+
+
+def akce_rezim_na_pc():
+    """Z menu u ikony: přepnout na „USB → PC“ až po potvrzení v okně."""
+    zajisti_vlakno_okna()
+    OKNO["fronta"].put("rezim-na-pc")
+
+
 def akce_casovac_dialog(druh):
     """Otevře dialog pro vlastní interval ("interval") nebo denní čas ("denne")."""
     zajisti_vlakno_okna()
@@ -1311,11 +1357,13 @@ def zkontroluj_zmeny():
                 cast = ("vše je synchronizované" if nic
                         else "čeká: " + zprava_obousmerna(vysledek))
             else:
-                zkopirovano, smazano = sync_jednosmerny(vault, cil, ignorovat,
-                                                        naostro=False)
+                smer = CFG.get("rezim")
+                zkopirovano, smazano = sync_jednosmerny(
+                    vault, cil, ignorovat, naostro=False, smer=smer)
                 cast = ("vše je synchronizované"
                         if not zkopirovano and not smazano
-                        else "čeká: " + zprava_jednosmerna(zkopirovano, smazano))
+                        else "čeká: " + zprava_jednosmerna(
+                            zkopirovano, smazano, smer=smer))
             casti.append(cast if len(disky) == 1 else f"{disk[0]}: {cast}")
         text = " | ".join(casti)
         NAHLED["text"] = text[0].upper() + text[1:]
@@ -1487,7 +1535,7 @@ def vlakno_okna():
             seznam.itemconfig(0, fg=B["tlumena"])
             return
         for zaznam in reversed(zaznamy):
-            sipka = "⇄" if zaznam.get("rezim") == "obousmerny" else "→"
+            sipka = {"obousmerny": "⇄", "na_pc": "←"}.get(zaznam.get("rezim"), "→")
             seznam.insert("end", f"  {hezky_cas(zaznam.get('kdy', ''))}   "
                                  f"{sipka}   {zaznam.get('zprava', '')}")
             if zaznam.get("chyba"):
@@ -1519,6 +1567,8 @@ def vlakno_okna():
             if prvky["verze_konfliktu"] != KONFLIKTY["verze"]:
                 prvky["verze_konfliktu"] = KONFLIKTY["verze"]
                 prekresli_konflikty()
+        if "nastaveni" in prvky and prvky["nastaveni"].winfo_viewable():
+            obnov_nastaveni()
         koren.after(700, obnov)
 
     def zeptej(druh):
@@ -1590,6 +1640,358 @@ def vlakno_okna():
         dialog.lift()
         pole.focus_force()
 
+    def potvrd_na_pc(rodic=None):
+        """Režim „USB → PC“ zapisuje a maže na PC — nejdřív se zeptat."""
+        return messagebox.askyesno(
+            "Holub — režim zapisuje na PC",
+            "V tomhle režimu se vault na tomhle počítači srovná přesně "
+            "podle USB:\n\n"
+            "• nové a změněné poznámky se zkopírují z USB sem,\n"
+            "• poznámky, které na USB nejsou, se přesunou do koše "
+            f"ve vaultu ({KOS_SLOZKA}, drží se {CFG.get('kos_dny', KOS_DNY)} dní).\n\n"
+            "Opravdu přepnout?", icon="warning", parent=rodic or koren)
+
+    def klic_casovace():
+        casovac = CFG.get("casovac", "vypnuto")
+        if casovac == "interval":
+            minuty = CFG.get("casovac_minuty")
+            return str(minuty) if minuty in (15, 30, 60) else "jiny"
+        return casovac  # "vypnuto" | "denne"
+
+    def postav_nastaveni():
+        """Okno Nastavení: všechno, co jde v Holubovi měnit, na jednom místě.
+        Každá změna se uloží hned (stejně jako v menu u ikony) a okno si
+        hodnoty periodicky načítá z CFG, takže drží krok i s menu."""
+        okno = tk.Toplevel(koren)
+        okno.title("Holub — nastavení")
+        okno.configure(bg=B["pozadi"])
+        okno.geometry("640x780+240+60")
+        okno.minsize(580, 480)
+        okno.protocol("WM_DELETE_WINDOW", okno.withdraw)  # zavření jen schová
+        ztmav_titulek(okno)
+
+        # posuvný obsah — nastavení je delší než malá obrazovka
+        platno = tk.Canvas(okno, bg=B["pozadi"], highlightthickness=0, bd=0)
+        posuvnik = tk.Scrollbar(okno, command=platno.yview)
+        platno.configure(yscrollcommand=posuvnik.set)
+        posuvnik.pack(side="right", fill="y")
+        platno.pack(side="left", fill="both", expand=True)
+        obsah = tk.Frame(platno, bg=B["pozadi"])
+        okno_id = platno.create_window((0, 0), window=obsah, anchor="nw")
+        obsah.bind("<Configure>",
+                   lambda _u: platno.configure(scrollregion=platno.bbox("all")))
+        platno.bind("<Configure>",
+                    lambda u: platno.itemconfigure(okno_id, width=u.width))
+        okno.bind("<MouseWheel>",
+                  lambda u: platno.yview_scroll(int(-u.delta / 120), "units"))
+
+        v = {  # proměnné navázané na widgety
+            "rezim": tk.StringVar(master=okno),
+            "casovac": tk.StringVar(master=okno),
+            "pripominka": tk.StringVar(master=okno),
+            "zasunuti": tk.BooleanVar(master=okno),
+            "oznameni": tk.BooleanVar(master=okno),
+            "autostart": tk.BooleanVar(master=okno),
+            "aktualizace": tk.BooleanVar(master=okno),
+            "kos": tk.StringVar(master=okno),
+            "pojistka": tk.StringVar(master=okno),
+        }
+        prvky["nastaveni_v"] = v
+
+        def karta(nazev):
+            nadpis(obsah, nazev).pack(fill="x", padx=16, pady=(16, 4))
+            ram = tk.Frame(obsah, bg=B["karta"])
+            ram.pack(fill="x", padx=16)
+            return ram
+
+        def popisek(rodic, text, odsazeni=12, dole=8, nahore=0):
+            stitek = tk.Label(rodic, text=text, bg=B["karta"],
+                              fg=B["tlumena"], font=("Segoe UI", 9),
+                              justify="left", anchor="w", wraplength=520)
+            stitek.pack(fill="x", padx=(odsazeni, 12), pady=(nahore, dole))
+            return stitek
+
+        def radio(rodic, text, promenna, hodnota, prikaz):
+            tlacitko_radio = tk.Radiobutton(
+                rodic, text=text, variable=promenna, value=hodnota,
+                command=prikaz, bg=B["karta"], fg=B["text"],
+                selectcolor=B["pozadi"], activebackground=B["karta"],
+                activeforeground=B["text"], font=("Segoe UI", 10),
+                anchor="w", bd=0, highlightthickness=0, cursor="hand2")
+            tlacitko_radio.pack(fill="x", padx=12, pady=(6, 0))
+            return tlacitko_radio
+
+        def zaskrtavatko(rodic, text, promenna, prikaz):
+            polozka = tk.Checkbutton(
+                rodic, text=text, variable=promenna, command=prikaz,
+                bg=B["karta"], fg=B["text"], selectcolor=B["pozadi"],
+                activebackground=B["karta"], activeforeground=B["text"],
+                font=("Segoe UI", 10), anchor="w", bd=0,
+                highlightthickness=0, cursor="hand2")
+            polozka.pack(fill="x", padx=12, pady=(6, 0))
+            return polozka
+
+        def rada_tlacitek(rodic):
+            rada = tk.Frame(rodic, bg=B["karta"])
+            rada.pack(fill="x", padx=12, pady=(4, 12))
+            return rada
+
+        def cislo_pole(rodic, promenna, od, do, popis):
+            rada = tk.Frame(rodic, bg=B["karta"])
+            rada.pack(fill="x", padx=12, pady=(8, 0))
+            tk.Label(rada, text=popis, bg=B["karta"], fg=B["text"],
+                     font=("Segoe UI", 10)).pack(side="left")
+            pole = tk.Spinbox(
+                rada, from_=od, to=do, textvariable=promenna, width=5,
+                bg=B["pozadi"], fg=B["text"], insertbackground=B["text"],
+                buttonbackground=B["tlacitko"], relief="flat",
+                font=("Segoe UI", 10), justify="right")
+            pole.pack(side="left", padx=(8, 0), ipady=2)
+            return pole
+
+        # --- Režim synchronizace -------------------------------------------
+        ram = karta("Režim synchronizace")
+
+        def zmen_rezim():
+            novy = v["rezim"].get()
+            if novy == CFG.get("rezim"):
+                return
+            if novy == "na_pc" and not potvrd_na_pc(okno):
+                v["rezim"].set(CFG.get("rezim", "na_usb"))
+                return
+            nastav_rezim(novy)
+
+        radio(ram, "Jenom na PC  (USB → PC)", v["rezim"], "na_pc", zmen_rezim)
+        popisek(ram, "Vault na tomhle počítači se srovná podle USB. Na USB se "
+                     "nikdy nezapisuje. Poznámky, které na USB nejsou, jdou na "
+                     "PC do koše.", odsazeni=34, dole=2)
+        radio(ram, "Jenom na USB  (PC → USB)", v["rezim"], "na_usb", zmen_rezim)
+        popisek(ram, "Klasická záloha: USB je přesné zrcadlo vaultu. Na PC se "
+                     "nikdy nezapisuje. Poznámky, které na PC nejsou, jdou na "
+                     "USB do koše.", odsazeni=34, dole=2)
+        radio(ram, "Obousměrný provoz  (PC ⇄ USB)", v["rezim"], "obousmerny",
+              zmen_rezim)
+        popisek(ram, "Změny se přenášejí oběma směry. Když se stejná poznámka "
+                     "změní na obou stranách, uloží se obě verze (soubor "
+                     "„… (konflikt z USB)“) a nic se nepřepíše.", odsazeni=34,
+                dole=2)
+        popisek(ram, "Změna režimu platí od příští synchronizace.", dole=10)
+
+        # --- Složky a disky --------------------------------------------------
+        ram = karta("Vault a USB disky")
+        prvky["n_vault"] = tk.Label(ram, text="", bg=B["karta"], fg=B["text"],
+                                    font=("Segoe UI", 10), justify="left",
+                                    anchor="w", wraplength=520)
+        prvky["n_vault"].pack(fill="x", padx=12, pady=(10, 0))
+        prvky["n_disky"] = tk.Label(ram, text="", bg=B["karta"],
+                                    fg=B["tlumena"], font=("Segoe UI", 9),
+                                    justify="left", anchor="w", wraplength=520)
+        prvky["n_disky"].pack(fill="x", padx=12, pady=(4, 0))
+        rada = rada_tlacitek(ram)
+        tlacitko(rada, "📂  Změnit složku vaultu…", akce_zvolit_vault).pack(
+            side="left", padx=(0, 8))
+        tlacitko(rada, "🔌  Spárovat nový USB disk…", akce_parovat).pack(
+            side="left", padx=(0, 8))
+        tlacitko(rada, "📁  Otevřít zálohu", akce_otevrit_zalohu).pack(side="left")
+
+        # --- Kdy synchronizovat ----------------------------------------------
+        ram = karta("Kdy synchronizovat")
+
+        def zmen_zasunuti():
+            CFG["sync_pri_zasunuti"] = v["zasunuti"].get()
+            uloz_config()
+
+        zaskrtavatko(ram, "Synchronizovat hned po zasunutí USB disku",
+                     v["zasunuti"], zmen_zasunuti)
+        popisek(ram, "Automatická synchronizace podle času (běží, jen když je "
+                     "USB připojené):", dole=0, nahore=12)
+
+        def vyber_casovac():
+            klic = v["casovac"].get()
+            if klic == "vypnuto":
+                nastav_casovac("vypnuto")
+            elif klic in ("15", "30", "60"):
+                nastav_casovac("interval", int(klic))
+            elif klic == "jiny":
+                zeptej("interval")
+            elif klic == "denne":
+                zeptej("denne")
+
+        for klic, text in (("vypnuto", "Vypnutá"),
+                           ("15", "Každých 15 minut"),
+                           ("30", "Každých 30 minut"),
+                           ("60", "Každou hodinu")):
+            radio(ram, text, v["casovac"], klic, vyber_casovac)
+        prvky["n_jiny"] = radio(ram, "Jiný interval…", v["casovac"], "jiny",
+                                vyber_casovac)
+        prvky["n_denne"] = radio(ram, "Každý den v…", v["casovac"], "denne",
+                                 vyber_casovac)
+        tk.Frame(ram, bg=B["karta"], height=8).pack()
+
+        # --- Oznámení a připomínky -------------------------------------------
+        ram = karta("Oznámení a připomínky")
+
+        def zmen_oznameni():
+            CFG["oznameni_uspech"] = v["oznameni"].get()
+            uloz_config()
+
+        zaskrtavatko(ram, "Ukázat oznámení po úspěšné synchronizaci",
+                     v["oznameni"], zmen_oznameni)
+        popisek(ram, "Chyby a konflikty poznámek se oznamují vždycky.",
+                odsazeni=34, dole=2)
+        popisek(ram, "Připomenout, když je záloha stará:", dole=0, nahore=10)
+        rada = tk.Frame(ram, bg=B["karta"])
+        rada.pack(fill="x", padx=12, pady=(0, 10))
+        for dny, text in (("0", "Nikdy"), ("3", "3 dny"), ("7", "7 dní"),
+                          ("14", "14 dní")):
+            tk.Radiobutton(
+                rada, text=text, variable=v["pripominka"], value=dny,
+                command=lambda: nastav_pripominku(int(v["pripominka"].get())),
+                bg=B["karta"], fg=B["text"], selectcolor=B["pozadi"],
+                activebackground=B["karta"], activeforeground=B["text"],
+                font=("Segoe UI", 10), bd=0, highlightthickness=0,
+                cursor="hand2").pack(side="left", padx=(0, 14))
+
+        # --- Bezpečnost ------------------------------------------------------
+        ram = karta("Bezpečnost")
+
+        def uloz_cislo(klic, promenna, od, do):
+            try:
+                hodnota = int(promenna.get())
+            except ValueError:
+                promenna.set(str(CFG.get(klic)))
+                return
+            hodnota = max(od, min(do, hodnota))
+            promenna.set(str(hodnota))
+            if CFG.get(klic) != hodnota:
+                CFG[klic] = hodnota
+                uloz_config()
+
+        pole_kos = cislo_pole(ram, v["kos"], 1, 365, "Koš drží smazané soubory (dní):")
+        popisek(ram, "Soubory se nemažou nadobro — stěhují se do skryté složky "
+                     f"{KOS_SLOZKA} a po této době se vysypou.", dole=0, nahore=2)
+        pole_pojistka = cislo_pole(ram, v["pojistka"], 5, 100,
+                                   "Zastavit a zeptat se, když by se mazalo víc než (%):")
+        popisek(ram, "Pojistka proti nehodě (přesunutá složka, omylem smazaný "
+                     f"vault). Platí od {POJISTKA_MIN_SOUBORU} souborů výš.",
+                dole=10, nahore=2)
+        for klic, promenna, pole, od, do in (
+                ("kos_dny", v["kos"], pole_kos, 1, 365),
+                ("pojistka_podil", v["pojistka"], pole_pojistka, 5, 100)):
+            prikaz = lambda *_u, k=klic, p=promenna, a=od, b=do: uloz_cislo(k, p, a, b)
+            pole.config(command=prikaz)
+            pole.bind("<Return>", prikaz)
+            pole.bind("<FocusOut>", prikaz)
+
+        # --- Ignorované soubory ----------------------------------------------
+        ram = karta("Ignorované soubory")
+        popisek(ram, "Tyhle soubory se nesynchronizují a Holub na ně nesahá. "
+                     "Cesta od kořene vaultu s lomítky, např. "
+                     ".obsidian/workspace.json", dole=4, nahore=8)
+        prvky["n_ignor"] = seznam_widget(ram, 4)
+        prvky["n_ignor"].pack(fill="x", padx=12, pady=(0, 6))
+        rada = tk.Frame(ram, bg=B["karta"])
+        rada.pack(fill="x", padx=12, pady=(0, 12))
+        pole_ignor = tk.Entry(rada, bg=B["pozadi"], fg=B["text"],
+                              insertbackground=B["text"], relief="flat",
+                              font=("Segoe UI", 10))
+        pole_ignor.pack(side="left", fill="x", expand=True, ipady=5, ipadx=6,
+                        padx=(0, 8))
+
+        def pridej_ignor(*_u):
+            cesta = pole_ignor.get().strip().replace("\\", "/")
+            if cesta.startswith("./"):
+                cesta = cesta[2:]
+            cesta = cesta.strip("/")
+            if not cesta:
+                return
+            seznam = list(CFG.get("ignorovat", []))
+            if cesta not in seznam:
+                seznam.append(cesta)
+                CFG["ignorovat"] = seznam
+                uloz_config()
+            pole_ignor.delete(0, "end")
+            obnov_nastaveni()
+
+        def odeber_ignor():
+            vyber = prvky["n_ignor"].curselection()
+            if not vyber:
+                return
+            cesta = prvky["n_ignor"].get(vyber[0]).strip()
+            CFG["ignorovat"] = [c for c in CFG.get("ignorovat", []) if c != cesta]
+            uloz_config()
+            obnov_nastaveni()
+
+        pole_ignor.bind("<Return>", pridej_ignor)
+        tlacitko(rada, "Přidat", pridej_ignor).pack(side="left", padx=(0, 8))
+        tlacitko(rada, "Odebrat vybraný", odeber_ignor).pack(side="left")
+
+        # --- Aplikace --------------------------------------------------------
+        ram = karta("Aplikace")
+
+        def zmen_autostart():
+            akce_autostart(IKONA["obj"])
+            v["autostart"].set(autostart_zapnuty())
+
+        def zmen_aktualizace():
+            CFG["kontrola_aktualizaci"] = v["aktualizace"].get()
+            uloz_config()
+
+        zaskrtavatko(ram, "Spouštět Holuba se systémem Windows", v["autostart"],
+                     zmen_autostart)
+        zaskrtavatko(ram, "Při startu se podívat, jestli není nová verze",
+                     v["aktualizace"], zmen_aktualizace)
+        rada = rada_tlacitek(ram)
+        rada.pack_configure(pady=(10, 4))
+        tlacitko(rada, "🔄  Zkontrolovat aktualizace", akce_aktualizace).pack(
+            side="left", padx=(0, 8))
+        tlacitko(rada, "🗂  Otevřít složku s daty",
+                 lambda: os.startfile(SLOZKA_DAT)).pack(side="left")
+        popisek(ram, f"Holub {VERZE}  ·  data a nastavení: {SLOZKA_DAT}", dole=12)
+        tk.Frame(obsah, bg=B["pozadi"], height=16).pack()
+
+        prvky["nastaveni"] = okno
+
+    def obnov_nastaveni():
+        """Přenese aktuální hodnoty z CFG do widgetů nastavení."""
+        if "nastaveni_v" not in prvky:
+            return
+        v = prvky["nastaveni_v"]
+        okno = prvky["nastaveni"]
+
+        def nastav(promenna, hodnota):
+            if promenna.get() != hodnota:
+                promenna.set(hodnota)
+
+        nastav(v["rezim"], CFG.get("rezim", "na_usb"))
+        nastav(v["casovac"], klic_casovace())
+        nastav(v["pripominka"], str(CFG.get("pripominka_dny") or 0)
+               if str(CFG.get("pripominka_dny") or 0) in ("0", "3", "7", "14")
+               else "")
+        nastav(v["zasunuti"], bool(CFG.get("sync_pri_zasunuti", True)))
+        nastav(v["oznameni"], bool(CFG.get("oznameni_uspech", True)))
+        nastav(v["aktualizace"], bool(CFG.get("kontrola_aktualizaci", True)))
+        nastav(v["autostart"], bool(autostart_zapnuty()))
+        zamereno = okno.focus_get()
+        for klic, promenna in (("kos_dny", v["kos"]),
+                               ("pojistka_podil", v["pojistka"])):
+            if not isinstance(zamereno, tk.Spinbox):  # nepřepisovat rozepsané číslo
+                nastav(promenna, str(CFG.get(klic)))
+        prvky["n_jiny"].config(text=text_jineho_intervalu())
+        prvky["n_denne"].config(text=text_denniho_casu())
+        vault = CFG.get("vault") or "není zvolená"
+        prvky["n_vault"].config(text=f"Vault: {vault}")
+        disky = list(S["usb"])
+        prvky["n_disky"].config(
+            text=("Připojené spárované USB disky: " + ", ".join(disky))
+            if disky else "Žádný spárovaný USB disk teď není připojený.")
+        seznam = prvky["n_ignor"]
+        polozky = list(CFG.get("ignorovat", []))
+        if list(seznam.get(0, "end")) != ["  " + p for p in polozky]:
+            seznam.delete(0, "end")
+            for polozka in polozky:
+                seznam.insert("end", "  " + polozka)
+
     def zeptej_mazani():
         """Dotaz pojistky: opravdu smazat tolik poznámek najednou?"""
         info = POTVRZENI["info"]
@@ -1607,7 +2009,7 @@ def vlakno_okna():
                   "To je hodně najednou, tak jsem se raději zastavil.\n"
                   "Nepřesunula se ti složka vaultu? Nezmizely poznámky omylem?\n\n"
                   f"Smazané neskončí v nenávratnu — jdou do koše {KOS_SLOZKA}\n"
-                  f"a tam se drží {KOS_DNY} dní.")
+                  f"a tam se drží {CFG.get('kos_dny', KOS_DNY)} dní.")
         tk.Label(dialog, text=zprava, bg=B["pozadi"], fg=B["text"],
                  font=("Segoe UI", 10), justify="left").pack(
             padx=18, pady=(16, 10), anchor="w")
@@ -1695,6 +2097,24 @@ def vlakno_okna():
                         prvky["okno"].focus_force()
                     except Exception:
                         pass
+                elif prikaz == "rezim-na-pc":  # z menu u ikony
+                    if CFG.get("rezim") != "na_pc":
+                        koren.attributes("-topmost", True)
+                        souhlas = potvrd_na_pc(None)
+                        koren.attributes("-topmost", False)
+                        if souhlas:
+                            nastav_rezim("na_pc")
+                    obnov_nastaveni()
+                elif prikaz == "nastaveni":
+                    if "nastaveni" not in prvky:
+                        postav_nastaveni()
+                    prvky["nastaveni"].deiconify()
+                    prvky["nastaveni"].lift()
+                    obnov_nastaveni()
+                    try:
+                        prvky["nastaveni"].focus_force()
+                    except Exception:
+                        pass
                 elif prikaz == "dialog-interval":
                     zeptej("interval")
                 elif prikaz == "dialog-denne":
@@ -1739,11 +2159,17 @@ def postav_menu():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("🪟 Přehled a historie", akce_okno, default=True),
         pystray.MenuItem("🔄 Synchronizovat teď", akce_sync),
+        pystray.MenuItem("⚙ Nastavení…", akce_nastaveni),
         pystray.MenuItem("⇄ Režim synchronizace", pystray.Menu(
             pystray.MenuItem(
-                "Jednosměrný (PC → USB)",
-                lambda *_: nastav_rezim("jednosmerny"),
-                checked=lambda _p: CFG.get("rezim") == "jednosmerny",
+                "Jenom na PC (USB → PC)",
+                lambda *_: akce_rezim_na_pc(),
+                checked=lambda _p: CFG.get("rezim") == "na_pc",
+                radio=True),
+            pystray.MenuItem(
+                "Jenom na USB (PC → USB)",
+                lambda *_: nastav_rezim("na_usb"),
+                checked=lambda _p: CFG.get("rezim") == "na_usb",
                 radio=True),
             pystray.MenuItem(
                 "Obousměrný (PC ⇄ USB)",

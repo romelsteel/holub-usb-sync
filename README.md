@@ -63,10 +63,16 @@ conflicts and a dry-run check of what the next sync would do:
   a list of unresolved conflicts with one-click open/delete, and a "check
   changes" button that shows what a sync *would* do without touching a single
   file. Dark by design.
-- **One-way mode (PC → USB)** — the default. The USB drive is an exact mirror
-  of the vault: changed notes get copied, whatever you delete on the PC
-  disappears from the USB too. In this mode the app **never writes to the
-  PC** — it only reads.
+- **Settings window** (tray menu → ⚙ Settings) — sync mode, vault and USB
+  drives, timer, notifications, backup reminder, trash retention, delete
+  safeguard, ignored files, autostart and a "check for updates" button.
+- **One-way mode, PC → USB** ("only to USB") — the default. The USB drive is
+  an exact mirror of the vault: changed notes get copied, whatever you delete
+  on the PC disappears from the USB too. In this mode the app **never writes
+  to the PC** — it only reads.
+- **One-way mode, USB → PC** ("only to PC") — the opposite: the vault on this
+  computer is made to match the USB. The app **never writes to the USB**;
+  notes missing on the USB go to the trash inside the vault.
 - **Two-way mode (PC ⇄ USB)** — for editing on a second computer. The newer
   version of a note wins. A conflict (the same note changed on both sides) is
   **never overwritten silently** — both versions are kept, the second one as
@@ -139,7 +145,8 @@ vše synchronizováno · dnes 14:32     (all synced · today 14:32)
 Holub carries notes, it does not lose them. These rules hold without
 exception:
 
-1. One-way mode **never writes to or deletes from the PC**.
+1. One-way mode PC → USB **never writes to or deletes from the PC** (and
+   USB → PC never touches the USB).
 2. A conflict is **never overwritten silently** — both versions always
    survive.
 3. If you delete a note on one side and edit it on the other in the meantime,

@@ -59,9 +59,16 @@ konflikty a kontrola nanečisto, co by příští synchronizace udělala:
   nevyřešených konfliktů s tlačítky otevřít/smazat a „Zkontrolovat změny",
   které ukáže, co *by* synchronizace udělala, aniž by sáhla na jediný soubor.
   Tmavé od základu.
-- **Jednosměrný režim (PC → USB)** — výchozí. USB je přesné zrcadlo vaultu:
+- **Okno Nastavení** (menu u ikony → ⚙ Nastavení) — režim synchronizace,
+  vault a USB disky, časovač, oznámení, připomínka zálohy, doba držení koše,
+  pojistka mazání, ignorované soubory, autostart a tlačítko „Zkontrolovat
+  aktualizace".
+- **Jenom na USB (PC → USB)** — výchozí. USB je přesné zrcadlo vaultu:
   změněné poznámky se zkopírují, co smažeš na PC, zmizí i na USB. V tomto
   režimu appka **na PC nikdy nezapisuje** — jen čte.
+- **Jenom na PC (USB → PC)** — opačně: vault na tomto počítači se srovná
+  podle USB. Appka **na USB nikdy nezapisuje**; poznámky, které na USB
+  chybí, jdou na PC do koše ve vaultu.
 - **Obousměrný režim (PC ⇄ USB)** — pro editaci na dalším počítači. Novější
   verze poznámky vyhrává. Konflikt (stejná poznámka změněná na obou stranách)
   se **nikdy nepřepíše potichu** — obě verze zůstanou, druhá jako
@@ -131,7 +138,7 @@ vše synchronizováno · dnes 14:32
 
 Holub nosí poznámky, neztrácí je. Proto platí bez výjimky:
 
-1. Jednosměrný režim **nikdy nezapisuje ani nemaže na PC**.
+1. Režim PC → USB **nikdy nezapisuje ani nemaže na PC** (a USB → PC zase nesahá na USB).
 2. Konflikt se **nikdy nepřepisuje potichu** — vždy zůstanou obě verze.
 3. Když poznámku na jedné straně smažeš a na druhé mezitím upravíš,
    **úprava vyhrává** — poznámka se vrátí, nic se neztratí.

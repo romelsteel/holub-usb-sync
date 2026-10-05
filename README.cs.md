@@ -63,6 +63,13 @@ konflikty a kontrola nanečisto, co by příští synchronizace udělala:
   vault a USB disky, časovač, oznámení, připomínka zálohy, doba držení koše,
   pojistka mazání, ignorované soubory, autostart a tlačítko „Zkontrolovat
   aktualizace".
+- **Další cíle** — vault se kromě USB může kopírovat i do dalších složek na
+  tomhle počítači, třeba do složky Google Disku. Každý cíl má vlastní směr
+  (PC → cíl, cíl → PC, obousměrně) a synchronizuje se ve stejném běhu, i když
+  není zasunuté USB.
+- **Aktualizace jedním klikem** — když vyjde nová verze, Holub nabídne stažení
+  instalátoru, ověří jeho kontrolní součet SHA-256, nainstaluje ho potichu a
+  znovu se spustí.
 - **Jenom na USB (PC → USB)** — výchozí. USB je přesné zrcadlo vaultu:
   změněné poznámky se zkopírují, co smažeš na PC, zmizí i na USB. V tomto
   režimu appka **na PC nikdy nezapisuje** — jen čte.

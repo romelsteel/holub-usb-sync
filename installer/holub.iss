@@ -1,7 +1,7 @@
 ; Inno Setup skript pro instalátor Holuba (per-user, bez práv správce)
 #define AppVer GetEnv("HOLUB_VERSION")
 #if AppVer == ""
-  #define AppVer "1.2.0"
+  #define AppVer "1.3.0"
 #endif
 
 [Setup]
@@ -44,7 +44,9 @@ Name: "{autodesktop}\Holub"; Filename: "{app}\Holub.exe"; Tasks: desktopicon
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Holub"; ValueData: """{app}\Holub.exe"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
+; po tiché aktualizaci z appky (Check: WizardSilent) se Holub spustí znovu
 Filename: "{app}\Holub.exe"; Description: "Spustit Holuba / Launch Holub"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Holub.exe"; Flags: nowait; Check: WizardSilent
 
 [UninstallDelete]
 Type: files; Name: "{userappdata}\Holub\dialog-vysledek.txt"

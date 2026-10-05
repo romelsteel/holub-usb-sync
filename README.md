@@ -66,6 +66,13 @@ conflicts and a dry-run check of what the next sync would do:
 - **Settings window** (tray menu → ⚙ Settings) — sync mode, vault and USB
   drives, timer, notifications, backup reminder, trash retention, delete
   safeguard, ignored files, autostart and a "check for updates" button.
+- **Extra targets** — besides the USB drive the vault can be copied to other
+  folders on this computer, e.g. a Google Drive folder. Each target has its own
+  direction (PC → target, target → PC, two-way) and is synced in the same run,
+  even when no USB drive is plugged in.
+- **One-click updates** — when a new release exists, Holub offers to download
+  the installer, verifies its SHA-256 checksum and installs it silently, then
+  starts again.
 - **One-way mode, PC → USB** ("only to USB") — the default. The USB drive is
   an exact mirror of the vault: changed notes get copied, whatever you delete
   on the PC disappears from the USB too. In this mode the app **never writes
